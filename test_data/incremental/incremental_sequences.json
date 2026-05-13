@@ -1,0 +1,42 @@
+[
+  {
+    "sequence_id": "INC-001",
+    "turns": [
+      {
+        "turn_id": 1,
+        "input_text": "Product Line: Powertrain, VCU: MCU-2301, Security Level: Medium, Build Flavor: Debug, Vehicle Program: EV-Sedan-A. The bearing housing shows excessive vibration at high RPM.",
+        "expected_new_info_count": 3
+      },
+      {
+        "turn_id": 2,
+        "input_text": "Update: Security Level changed to High. The vibration is now also present at low RPM ranges.",
+        "expected_new_info_count": 2
+      },
+      {
+        "turn_id": 3,
+        "input_text": "Additional info: The issue only occurs when the vehicle is under load, not during free revving.",
+        "expected_new_info_count": 1
+      }
+    ]
+  },
+  {
+    "sequence_id": "INC-002",
+    "turns": [
+      {
+        "turn_id": 1,
+        "input_text": "Product Line: ADAS, VCU: ADC-7703, Security Level: Critical, Build Flavor: Release, Vehicle Program: Sedan-Lux-D. AEB system triggering false positives on highway.",
+        "expected_new_info_count": 3
+      },
+      {
+        "turn_id": 2,
+        "input_text": "Did the conflict detection results change?",
+        "expected_new_info_count": 0
+      },
+      {
+        "turn_id": 3,
+        "input_text": "Update: The issue is now also reproducible in urban driving at low speeds.",
+        "expected_new_info_count": 1
+      }
+    ]
+  }
+]

@@ -1,0 +1,33 @@
+[project]
+name = "agent-evaluation-framework"
+version = "0.1.0"
+description = "Evaluation framework for Defect Description Agent"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1,<9",
+    "pydantic>=2.5,<3",
+    "openai>=1.30,<2",
+    "requests>=2.31,<3",
+    "matplotlib>=3.8,<4",
+    "numpy>=1.26,<3",
+    "rich>=13.7,<14",
+    "python-dotenv>=1.0,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9",
+    "pytest-cov>=5.0,<6",
+    "ruff>=0.4,<1",
+]
+
+[project.scripts]
+eval-framework = "src.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "config"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"

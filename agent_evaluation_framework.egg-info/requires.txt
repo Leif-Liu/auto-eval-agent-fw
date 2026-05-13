@@ -1,0 +1,13 @@
+click<9,>=8.1
+pydantic<3,>=2.5
+openai<2,>=1.30
+requests<3,>=2.31
+matplotlib<4,>=3.8
+numpy<3,>=1.26
+rich<14,>=13.7
+python-dotenv<2,>=1.0
+
+[dev]
+pytest<9,>=8.0
+pytest-cov<6,>=5.0
+ruff<1,>=0.4

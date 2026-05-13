@@ -1,0 +1,94 @@
+[
+  {
+    "sample_id": "STD-001",
+    "input_description": "Product Line: Powertrain, VCU: MCU-2301, Security Level: Medium, Build Flavor: Debug, Vehicle Program: EV-Sedan-A. The bearing housing shows signs of excessive vibration at high RPM ranges above 4500. The temperature readings are normal but the noise level is significantly elevated during acceleration phases.",
+    "ground_truth_summary": "[Powertrain][MCU-2301][Medium][Debug][EV-Sedan-A] Bearing housing exhibiting excessive vibration at RPM > 4500 with elevated noise during acceleration despite normal temperature readings.",
+    "conflict_annotations": [
+      {
+        "conflict_text": "temperature readings are normal",
+        "conflict_type": "factual_contradiction",
+        "expected_detection": true
+      }
+    ],
+    "grammar_error_annotations": [
+      {
+        "original_text": "shows signs of",
+        "corrected_text": "exhibits",
+        "error_type": "style"
+      }
+    ],
+    "difficulty": "easy",
+    "metadata": {"source": "training_set_A", "tags": ["vibration", "bearing"]}
+  },
+  {
+    "sample_id": "STD-002",
+    "input_description": "Product Line: Chassis, VCU: SCU-4402, Security Level: High, Build Flavor: Release, Vehicle Program: SUV-Cross-B. The steering angle sensor intermittent failure causing EPS warning light activation. Sensor reading drops to 0 degrees randomly during cornering. The issue is reproducible in both left and right turns at speeds above 30 km/h.",
+    "ground_truth_summary": "[Chassis][SCU-4402][High][Release][SUV-Cross-B] Steering angle sensor intermittent failure causing EPS warning light activation with random 0-degree reading drops during cornering at speeds > 30 km/h.",
+    "conflict_annotations": [],
+    "grammar_error_annotations": [
+      {
+        "original_text": "intermittent failure causing",
+        "corrected_text": "intermittent failure is causing",
+        "error_type": "grammar"
+      }
+    ],
+    "difficulty": "medium",
+    "metadata": {"source": "training_set_A", "tags": ["steering", "sensor", "EPS"]}
+  },
+  {
+    "sample_id": "STD-003",
+    "input_description": "Product Line: Body, VCU: BCM-1105, Security Level: Low, Build Flavor: Debug, Vehicle Program: Hatchback-C. Door lock actuator fail to respond to remote key commands in cold weather below -10C. The central locking system works fine but the individual door actuators do not. Problem only occurs on the driver side door. Passenger side is unaffected.",
+    "ground_truth_summary": "[Body][BCM-1105][Low][Debug][Hatchback-C] Driver-side door lock actuator failing to respond to remote key commands in cold weather (< -10C) while central locking and passenger-side actuators function normally.",
+    "conflict_annotations": [
+      {
+        "conflict_text": "central locking system works fine",
+        "conflict_type": "partial_inconsistency",
+        "expected_detection": true
+      }
+    ],
+    "grammar_error_annotations": [
+      {
+        "original_text": "actuator fail",
+        "corrected_text": "actuator fails",
+        "error_type": "tense"
+      },
+      {
+        "original_text": "Problem only occurs",
+        "corrected_text": "The problem occurs only",
+        "error_type": "style"
+      }
+    ],
+    "difficulty": "medium",
+    "metadata": {"source": "training_set_B", "tags": ["door_lock", "actuator", "cold_weather"]}
+  },
+  {
+    "sample_id": "STD-004",
+    "input_description": "Product Line: ADAS, VCU: ADC-7703, Security Level: Critical, Build Flavor: Release, Vehicle Program: Sedan-Lux-D. The AEB system is triggering false positive emergency braking events on highway driving when passing under large overhead signs. Radar returns show object detection at 150m but vision system cannot confirm. System applies full brake at 80 km/h creating rear-end collision risk. The issue is not present in urban driving scenarios.",
+    "ground_truth_summary": "[ADAS][ADC-7703][Critical][Release][Sedan-Lux-D] AEB false positive triggering on highways when passing overhead signs — radar detects objects at 150m unconfirmed by vision system, causing emergency braking at 80 km/h with rear-end collision risk. Issue absent in urban scenarios.",
+    "conflict_annotations": [
+      {
+        "conflict_text": "Radar returns show object detection at 150m but vision system cannot confirm",
+        "conflict_type": "sensor_conflict",
+        "expected_detection": true
+      }
+    ],
+    "grammar_error_annotations": [],
+    "difficulty": "complex",
+    "metadata": {"source": "training_set_B", "tags": ["AEB", "false_positive", "highway_safety"]}
+  },
+  {
+    "sample_id": "STD-005",
+    "input_description": "Product Line: Infotainment, VCU: ICC-5501, Security Level: Medium, Build Flavor: Debug, Vehicle Program: SUV-Cross-B. Head unit reboots during navigation route calculation when route length exceeds 500km. GPS signal is strong. Bluetooth audio streaming continues during reboot but display goes black for 15-20 seconds. Issue started after OTA update v3.2.1.",
+    "ground_truth_summary": "[Infotainment][ICC-5501][Medium][Debug][SUV-Cross-B] Head unit rebooting during navigation route calculation for routes > 500km — display goes black for 15-20 seconds while Bluetooth audio continues. Onset correlated with OTA update v3.2.1.",
+    "conflict_annotations": [],
+    "grammar_error_annotations": [
+      {
+        "original_text": "GPS signal is strong",
+        "corrected_text": "The GPS signal is strong",
+        "error_type": "style"
+      }
+    ],
+    "difficulty": "easy",
+    "metadata": {"source": "training_set_A", "tags": ["infotainment", "reboot", "navigation"]}
+  }
+]

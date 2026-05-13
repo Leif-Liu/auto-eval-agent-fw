@@ -1,0 +1,32 @@
+[
+  {
+    "case_id": "ANOM-E1-001",
+    "anomaly_type": "E1_oversized",
+    "input_description": "This is an extremely long defect description that exceeds the normal input size limits. The bearing housing shows signs of excessive vibration at high RPM ranges above 4500. The temperature readings are normal but the noise level is significantly elevated during acceleration phases. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum. Repeat padding text to simulate oversized input exceeding 10000 characters. This input should trigger the agent's input size validation and return an appropriate error message rather than processing the full content or crashing. The expected behavior is a clear error message indicating the input exceeds maximum length.",
+    "expected_behavior": "reject with size limit error"
+  },
+  {
+    "case_id": "ANOM-E2-001",
+    "anomaly_type": "E2_gibberish",
+    "input_description": "@#$%^&*!!! xyzzy12345 qwerty9999 ???!!!&&& asdfjkl;;; 00000000 >>>>><<<<",
+    "expected_behavior": "reject with invalid input error"
+  },
+  {
+    "case_id": "ANOM-E3-001",
+    "anomaly_type": "E3_format_error",
+    "input_description": "",
+    "expected_behavior": "reject with empty input error"
+  },
+  {
+    "case_id": "ANOM-E4-001",
+    "anomaly_type": "E4_mixed_language",
+    "input_description": "Product Line: 动力总成, VCU: MCU-2301, 转向角传感器间歇性故障导致EPS警告灯亮起。The sensor reading drops to 0度 during转弯 at speeds above 30 km/h. 制动系统也有similar issues in冷天气.",
+    "expected_behavior": "handle gracefully with partial processing or clear error"
+  },
+  {
+    "case_id": "ANOM-E3-002",
+    "anomaly_type": "E3_format_error",
+    "input_description": "Just some random text without any structured fields or defect information whatsoever",
+    "expected_behavior": "handle gracefully with warning about missing fields"
+  }
+]
