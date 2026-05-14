@@ -9,8 +9,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 from config import (
-    AGENT_BASE_URL, AGENT_TIMEOUT_SEC,
-    OPENAI_API_KEY, OPENAI_MODEL,
+    RAGFLOW_API_KEY, RAGFLOW_BASE_URL, RAGFLOW_AGENT_ID, AGENT_TIMEOUT_SEC,
+    OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL,
     TEST_DATA_DIR, RESULTS_DIR,
 )
 
@@ -19,8 +19,30 @@ console = Console()
 
 @click.group()
 def cli():
-    """Defect Description Agent Evaluation Framework."""
+    """Master Agent Evaluation Framework."""
     pass
+
+
+def _create_agent_client():
+    """Create and connect the RAGFlow agent client."""
+    from src.agent_client import AgentClient
+    client = AgentClient(
+        api_key=RAGFLOW_API_KEY,
+        base_url=RAGFLOW_BASE_URL,
+        agent_id=RAGFLOW_AGENT_ID,
+        timeout=AGENT_TIMEOUT_SEC,
+    )
+    return client
+
+
+def _create_llm_judge():
+    """Create the LLM judge with vLLM endpoint."""
+    from src.llm_judge import LLMJudge
+    return LLMJudge(
+        api_key=OPENAI_API_KEY,
+        base_url=OPENAI_BASE_URL,
+        model=OPENAI_MODEL,
+    )
 
 
 @cli.command()
@@ -31,24 +53,22 @@ def cli():
 @click.option("--no-charts", is_flag=True, help="Skip chart generation")
 def run(sample_limit, dimensions, output_dir, baseline, no_charts):
     """Run full evaluation pipeline."""
-    # Validate environment
+    if not RAGFLOW_API_KEY or not RAGFLOW_AGENT_ID:
+        console.print("[red]Error: RAGFLOW_API_KEY and RAGFLOW_AGENT_ID must be set in .env[/red]")
+        sys.exit(1)
     if not OPENAI_API_KEY:
         console.print("[red]Error: OPENAI_API_KEY not set. Set it in .env or environment variable.[/red]")
         sys.exit(1)
 
-    from src.agent_client import AgentClient
-    from src.llm_judge import LLMJudge
-    from src.orchestrator import EvaluationOrchestrator
-
     console.print(Panel("Starting Evaluation Pipeline", style="bold blue"))
 
-    agent_client = AgentClient(AGENT_BASE_URL, AGENT_TIMEOUT_SEC)
-    llm_judge = LLMJudge(OPENAI_API_KEY, OPENAI_MODEL)
+    agent_client = _create_agent_client()
+    llm_judge = _create_llm_judge()
 
-    # Check agent connectivity
-    console.print("Checking agent connectivity... ", end="")
-    if not agent_client.health_check():
-        console.print("[yellow]Warning: Agent not reachable at " + AGENT_BASE_URL + "[/yellow]")
+    # Connect to agent
+    console.print("Connecting to RAGFlow agent... ", end="")
+    if not agent_client.connect():
+        console.print(f"[yellow]Warning: Could not connect to agent {RAGFLOW_AGENT_ID}[/yellow]")
         console.print("Continuing anyway (agent calls will fail gracefully)...")
     else:
         console.print("[green]OK[/green]")
@@ -56,12 +76,7 @@ def run(sample_limit, dimensions, output_dir, baseline, no_charts):
     results_dir = Path(output_dir) if output_dir else RESULTS_DIR
     dim_list = list(dimensions) if dimensions else None
 
-    orchestrator = EvaluationOrchestrator(
-        agent_client=agent_client,
-        llm_judge=llm_judge,
-        test_data_dir=Path(TEST_DATA_DIR),
-        results_dir=results_dir,
-    )
+    orchestrator = _create_orchestrator(agent_client, llm_judge, results_dir)
 
     try:
         with console.status("[bold green]Running evaluation..."):
@@ -86,51 +101,68 @@ def run(sample_limit, dimensions, output_dir, baseline, no_charts):
 @click.option("--sample-limit", type=int, default=5, help="Number of samples for quick run")
 def quickrun(sample_limit):
     """Quick evaluation with limited samples for development."""
-    from src.agent_client import AgentClient
-    from src.llm_judge import LLMJudge
-    from src.orchestrator import EvaluationOrchestrator
-
-    if not OPENAI_API_KEY:
-        console.print("[red]Error: OPENAI_API_KEY not set.[/red]")
+    if not RAGFLOW_API_KEY or not RAGFLOW_AGENT_ID:
+        console.print("[red]Error: RAGFLOW_API_KEY and RAGFLOW_AGENT_ID must be set.[/red]")
         sys.exit(1)
 
     console.print(Panel(f"Quick Run — {sample_limit} samples", style="bold yellow"))
 
-    agent_client = AgentClient(AGENT_BASE_URL, AGENT_TIMEOUT_SEC)
-    llm_judge = LLMJudge(OPENAI_API_KEY, OPENAI_MODEL)
+    agent_client = _create_agent_client()
+    llm_judge = _create_llm_judge()
 
-    orchestrator = EvaluationOrchestrator(
-        agent_client=agent_client,
-        llm_judge=llm_judge,
-    )
+    if not agent_client.connect():
+        console.print(f"[yellow]Warning: Could not connect to agent {RAGFLOW_AGENT_ID}[/yellow]")
+
+    orchestrator = _create_orchestrator(agent_client, llm_judge)
 
     output = orchestrator.run_full_evaluation(sample_limit=sample_limit)
     console.print(output["summary"])
     console.print(f"\n[dim]Results: {output['run_dir']}[/dim]")
 
 
+def _create_orchestrator(agent_client, llm_judge, results_dir=None):
+    from src.orchestrator import EvaluationOrchestrator
+    return EvaluationOrchestrator(
+        agent_client=agent_client,
+        llm_judge=llm_judge,
+        test_data_dir=Path(TEST_DATA_DIR),
+        results_dir=results_dir or RESULTS_DIR,
+    )
+
+
 @cli.command()
 def check():
-    """Verify environment: agent connectivity, OpenAI key, test data integrity."""
+    """Verify environment: RAGFlow connectivity, LLM judge, test data integrity."""
     from src.data.loader import load_test_data, get_dataset_stats
 
     issues = []
 
-    # Check OpenAI key
+    # Check RAGFlow config
+    if RAGFLOW_API_KEY and RAGFLOW_AGENT_ID:
+        console.print(f"[green]✓[/green] RAGFLOW config set (agent: {RAGFLOW_AGENT_ID})")
+    else:
+        console.print("[red]✗[/red] RAGFLOW_API_KEY or RAGFLOW_AGENT_ID not set")
+        issues.append("RAGFLOW_CONFIG")
+
+    # Check LLM judge config
     if OPENAI_API_KEY:
-        console.print(f"[green]✓[/green] OPENAI_API_KEY set (model: {OPENAI_MODEL})")
+        console.print(f"[green]✓[/green] LLM Judge config set (model: {OPENAI_MODEL}, endpoint: {OPENAI_BASE_URL})")
     else:
         console.print("[red]✗[/red] OPENAI_API_KEY not set")
         issues.append("OPENAI_API_KEY")
 
-    # Check agent
+    # Check RAGFlow connectivity
     from src.agent_client import AgentClient
-    agent = AgentClient(AGENT_BASE_URL, AGENT_TIMEOUT_SEC)
+    agent = AgentClient(
+        api_key=RAGFLOW_API_KEY,
+        base_url=RAGFLOW_BASE_URL,
+        agent_id=RAGFLOW_AGENT_ID,
+    )
     if agent.health_check():
-        console.print(f"[green]✓[/green] Agent reachable at {AGENT_BASE_URL}")
+        console.print(f"[green]✓[/green] RAGFlow agent reachable at {RAGFLOW_BASE_URL}")
     else:
-        console.print(f"[yellow]✗[/yellow] Agent not reachable at {AGENT_BASE_URL}")
-        issues.append("AGENT")
+        console.print(f"[yellow]✗[/yellow] RAGFlow agent not reachable")
+        issues.append("RAGFLOW_AGENT")
 
     # Check test data
     test_dir = Path(TEST_DATA_DIR)

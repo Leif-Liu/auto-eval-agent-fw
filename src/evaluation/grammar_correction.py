@@ -1,4 +1,7 @@
-"""Grammar Correction evaluation — fix rate + over-correction rate."""
+"""Grammar Correction evaluation — uses LLM-as-a-Judge for text-based responses."""
+
+import json
+import logging
 
 from src.models.test_data import TestDataSet
 from src.models.agent_response import AgentResponse
@@ -6,57 +9,7 @@ from src.models.evaluation_result import DimensionScore, SubScore
 from src.evaluation.base import iter_paired_samples
 from config import WEIGHTS, GRAMMAR_WEIGHTS
 
-
-def _align_corrections(
-    ground_truth_errors: list[dict],
-    agent_corrections: list[dict],
-    original_text: str = "",
-) -> dict:
-    """Align agent corrections with ground truth errors.
-
-    Returns: correctly_fixed, missed, over_corrected, total_errors, total_correct_words.
-    """
-    total_errors = len(ground_truth_errors)
-    if total_errors == 0 and not agent_corrections:
-        return {
-            "correctly_fixed": 0,
-            "missed": 0,
-            "over_corrected": 0,
-            "total_errors": 0,
-            "total_correct_words": 0,
-        }
-
-    correctly_fixed = 0
-    matched_corrections = set()
-
-    for gt in ground_truth_errors:
-        gt_original = gt.get("original_text", "").strip().lower()
-        gt_corrected = gt.get("corrected_text", "").strip().lower()
-
-        for i, ac in enumerate(agent_corrections):
-            if i in matched_corrections:
-                continue
-            ac_original = ac.get("original_text", "").strip().lower()
-            ac_corrected = ac.get("corrected_text", "").strip().lower()
-
-            if gt_original == ac_original or gt_original in ac_original or ac_original in gt_original:
-                if gt_corrected == ac_corrected or gt_corrected in ac_corrected:
-                    correctly_fixed += 1
-                    matched_corrections.add(i)
-                    break
-
-    missed = total_errors - correctly_fixed
-    over_corrected = len(agent_corrections) - len(matched_corrections)
-
-    total_correct_words = max(1, len(original_text.split()) - total_errors)
-
-    return {
-        "correctly_fixed": correctly_fixed,
-        "missed": missed,
-        "over_corrected": over_corrected,
-        "total_errors": total_errors,
-        "total_correct_words": total_correct_words,
-    }
+logger = logging.getLogger(__name__)
 
 
 def evaluate(
@@ -64,21 +17,29 @@ def evaluate(
     test_data: TestDataSet,
     llm_judge=None,
 ) -> DimensionScore:
-    """Evaluate Grammar Correction dimension.
+    """Evaluate Grammar Correction dimension using LLM-as-a-Judge.
 
+    Since the agent returns plain text, we use the LLM judge to determine
+    whether the agent's response correctly fixes expected grammar errors.
     Score = fix_rate_score * 0.7 + overcorrection_score * 0.3
-    where fix_rate_score = fix_rate * 100
-          overcorrection_score = (1 - overcorrection_rate) * 100
     """
     weight = WEIGHTS["grammar_correction"]
 
+    if llm_judge is None:
+        return DimensionScore(
+            dimension_name="Grammar Correction",
+            weight=weight,
+            raw_score=0.0,
+            weighted_score=0.0,
+            sub_scores=[],
+            details={"error": "LLM judge not provided"},
+        )
+
     total_correctly_fixed = 0
     total_errors = 0
-    total_over_corrected = 0
-    total_correct_words = 0
+    total_over_corrections = 0
     per_sample = []
 
-    # Track error responses separately
     for response in agent_responses:
         if response.error:
             per_sample.append({
@@ -86,36 +47,52 @@ def evaluate(
             })
 
     for response, sample in iter_paired_samples(agent_responses, test_data):
-        gt_errors = [e.model_dump() for e in sample.grammar_error_annotations]
-        agent_corrections = [c.model_dump() for c in response.grammar_corrections]
+        gt_errors = sample.grammar_error_annotations
+        if not gt_errors:
+            per_sample.append({
+                "sample_id": response.sample_id,
+                "correctly_fixed": 0,
+                "total_errors": 0,
+                "over_corrections": 0,
+            })
+            continue
 
-        result = _align_corrections(
-            gt_errors, agent_corrections, sample.input_description
+        expected_json = json.dumps(
+            [{"original_text": e.original_text, "corrected_text": e.corrected_text, "error_type": e.error_type}
+             for e in gt_errors],
+            ensure_ascii=False,
         )
 
-        total_correctly_fixed += result["correctly_fixed"]
-        total_errors += result["total_errors"]
-        total_over_corrected += result["over_corrected"]
-        total_correct_words += result["total_correct_words"]
+        result = llm_judge.judge_grammar(
+            input_description=sample.input_description,
+            agent_response=response.summary,
+            expected_errors=expected_json,
+        )
 
-        fix_rate = result["correctly_fixed"] / result["total_errors"] if result["total_errors"] > 0 else 1.0
-        over_rate = result["over_corrected"] / result["total_correct_words"] if result["total_correct_words"] > 0 else 0.0
+        fixed = result.get("correctly_fixed", 0)
+        errors = result.get("total_errors", len(gt_errors))
+        over_corr = result.get("over_corrections", 0)
 
+        total_correctly_fixed += fixed
+        total_errors += errors
+        total_over_corrections += over_corr
+
+        fix_rate = fixed / errors if errors > 0 else 1.0
         per_sample.append({
             "sample_id": response.sample_id,
+            "correctly_fixed": fixed,
+            "total_errors": errors,
+            "over_corrections": over_corr,
             "fix_rate": round(fix_rate, 4),
-            "overcorrection_rate": round(over_rate, 4),
-            "correctly_fixed": result["correctly_fixed"],
-            "total_errors": result["total_errors"],
-            "over_corrected": result["over_corrected"],
+            "details": result.get("fix_details", []),
+            "reasoning": result.get("reasoning", ""),
         })
 
-    # Aggregate metrics
     fix_rate = total_correctly_fixed / total_errors if total_errors > 0 else 1.0
-    overcorrection_rate = total_over_corrected / total_correct_words if total_correct_words > 0 else 0.0
+    overcorrection_rate = total_over_corrections / max(total_errors, 1)
 
     fix_rate_score = fix_rate * 100
-    overcorrection_score = (1 - overcorrection_rate) * 100
+    overcorrection_score = max(0, (1 - overcorrection_rate)) * 100
     raw_score = round(
         fix_rate_score * GRAMMAR_WEIGHTS["fix_rate"]
         + overcorrection_score * GRAMMAR_WEIGHTS["overcorrection_rate"],
@@ -137,6 +114,7 @@ def evaluate(
             "overcorrection_rate": round(overcorrection_rate, 4),
             "total_errors": total_errors,
             "total_correctly_fixed": total_correctly_fixed,
-            "total_over_corrected": total_over_corrected,
+            "total_over_corrections": total_over_corrections,
+            "method": "LLM-as-a-Judge",
         },
     )

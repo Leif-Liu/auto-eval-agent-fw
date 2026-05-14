@@ -86,8 +86,8 @@ class EvaluationOrchestrator:
         logger.info("Running dimension evaluations...")
         all_dimensions = {
             "summary_accuracy": lambda: summary_accuracy.evaluate(responses, test_data, self.llm_judge),
-            "conflict_detection": lambda: conflict_detection.evaluate(responses, test_data),
-            "grammar_correction": lambda: grammar_correction.evaluate(responses, test_data),
+            "conflict_detection": lambda: conflict_detection.evaluate(responses, test_data, self.llm_judge),
+            "grammar_correction": lambda: grammar_correction.evaluate(responses, test_data, self.llm_judge),
             "system_stability": lambda: system_stability.evaluate(
                 responses, test_data, anomaly_responses=anomaly_responses
             ),
@@ -137,13 +137,9 @@ class EvaluationOrchestrator:
         radar_path = None
         trend_path = None
         try:
-            baseline_for_chart = None
-            if baseline:
-                baseline_for_chart = baseline
-
             radar_path = build_radar_chart(
                 dimension_scores,
-                baseline_scores=baseline_for_chart,
+                baseline_scores=baseline,
                 output_path=run_dir / "radar_chart.png",
             )
         except Exception as e:

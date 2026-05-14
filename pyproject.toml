@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=1.26,<3",
     "rich>=13.7,<14",
     "python-dotenv>=1.0,<2",
+    "ragflow-sdk==0.17.2",
 ]
 
 [project.optional-dependencies]

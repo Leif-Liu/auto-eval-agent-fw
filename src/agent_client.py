@@ -1,9 +1,10 @@
-"""HTTP client to call the Defect Description Agent API."""
+"""RAGFlow SDK client to call the evaluated Master Agent."""
 
 import logging
+import time
 from typing import Optional
 
-import requests
+from ragflow_sdk import RAGFlow
 
 from src.models.agent_response import AgentResponse
 
@@ -11,45 +12,74 @@ logger = logging.getLogger(__name__)
 
 
 class AgentClient:
-    """Thin HTTP client wrapping requests to call the Defect Agent API."""
+    """Client wrapping RAGFlow SDK to interact with the evaluated agent."""
 
-    def __init__(self, base_url: str, timeout: int = 30):
-        self.base_url = base_url.rstrip("/")
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        agent_id: str,
+        timeout: int = 120,
+    ):
+        self.api_key = api_key
+        self.base_url = base_url
+        self.agent_id = agent_id
         self.timeout = timeout
+        self.rag_object = None
+        self.agent = None
+
+    def connect(self) -> bool:
+        """Initialize RAGFlow connection and verify the agent exists."""
+        try:
+            self.rag_object = RAGFlow(api_key=self.api_key, base_url=self.base_url)
+            agents_list = self.rag_object.list_agents(id=self.agent_id)
+            if not agents_list:
+                logger.error(f"No agent found with ID '{self.agent_id}'")
+                return False
+            self.agent = agents_list[0]
+            logger.info(f"Connected to agent: {getattr(self.agent, 'name', 'Unknown')} (ID: {self.agent.id})")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to connect to RAGFlow: {e}")
+            return False
 
     def evaluate_sample(self, sample_id: str, description: str) -> AgentResponse:
-        """POST defect description to agent, return structured response."""
+        """Send a question to the RAGFlow agent and return the response.
+
+        Creates a fresh session for each sample to ensure isolation.
+        """
+        start_time = time.time()
         try:
-            resp = requests.post(
-                f"{self.base_url}/api/defect/process",
-                json={"defect_description": description},
-                timeout=self.timeout,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return self._parse_response(sample_id, data)
-        except requests.Timeout:
-            logger.warning(f"Timeout for sample {sample_id}")
-            return AgentResponse(sample_id=sample_id, error="TimeoutError")
-        except requests.ConnectionError:
-            logger.error(f"Connection error for sample {sample_id}")
-            return AgentResponse(sample_id=sample_id, error="ConnectionError")
-        except requests.HTTPError as e:
-            logger.warning(f"HTTP error {e.response.status_code} for sample {sample_id}")
+            if not self.agent:
+                return AgentResponse(sample_id=sample_id, error="AgentNotConnected")
+
+            session = self.agent.create_session()
+            content = ""
+            for ans in session.ask(description, stream=True):
+                content = ans.content
+
+            elapsed_ms = (time.time() - start_time) * 1000
             return AgentResponse(
                 sample_id=sample_id,
-                error=f"HTTPError: {e.response.status_code}",
+                summary=content,
+                processing_time_ms=round(elapsed_ms, 2),
+                raw_response={"content": content},
             )
         except Exception as e:
-            logger.error(f"Unexpected error for sample {sample_id}: {e}")
-            return AgentResponse(sample_id=sample_id, error=str(type(e).__name__))
+            elapsed_ms = (time.time() - start_time) * 1000
+            logger.error(f"Error evaluating sample {sample_id}: {e}")
+            return AgentResponse(
+                sample_id=sample_id,
+                error=str(type(e).__name__),
+                processing_time_ms=round(elapsed_ms, 2),
+            )
 
     def evaluate_batch(
         self,
         samples: list[dict],
         progress_callback: Optional[callable] = None,
     ) -> list[AgentResponse]:
-        """Evaluate multiple samples sequentially."""
+        """Evaluate multiple samples sequentially, each in an isolated session."""
         results = []
         for i, sample in enumerate(samples):
             response = self.evaluate_sample(
@@ -62,30 +92,11 @@ class AgentClient:
         return results
 
     def health_check(self) -> bool:
-        """Verify agent is reachable."""
+        """Verify RAGFlow and the target agent are reachable."""
         try:
-            resp = requests.get(f"{self.base_url}/health", timeout=5)
-            return resp.status_code == 200
+            if not self.rag_object:
+                self.rag_object = RAGFlow(api_key=self.api_key, base_url=self.base_url)
+            agents = self.rag_object.list_agents(id=self.agent_id)
+            return len(agents) > 0
         except Exception:
             return False
-
-    def _parse_response(self, sample_id: str, data: dict) -> AgentResponse:
-        """Parse raw API response into AgentResponse model."""
-        from src.models.agent_response import DetectedConflict, GrammarCorrection
-
-        conflicts = [
-            DetectedConflict(**c) for c in data.get("detected_conflicts", [])
-        ]
-        corrections = [
-            GrammarCorrection(**c) for c in data.get("grammar_corrections", [])
-        ]
-
-        return AgentResponse(
-            sample_id=sample_id,
-            summary=data.get("summary", ""),
-            detected_conflicts=conflicts,
-            grammar_corrections=corrections,
-            processing_time_ms=data.get("processing_time_ms", 0.0),
-            error=data.get("error"),
-            raw_response=data,
-        )

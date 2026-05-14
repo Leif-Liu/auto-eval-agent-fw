@@ -10,33 +10,28 @@ from config import WEIGHTS, STABILITY_WEIGHTS
 
 logger = logging.getLogger(__name__)
 
-# Error indicators in agent responses that suggest graceful handling
 GRACEFUL_INDICATORS = [
     "error", "invalid", "unable to", "please provide",
     "cannot process", "exceeds", "missing", "warning",
-    "sorry", "could not", "not found",
+    "sorry", "could not", "not found", "无法", "错误",
+    "输入", "格式", "超出",
 ]
 
 
 def _is_graceful_response(response: AgentResponse) -> bool:
-    """Check if agent handled an anomaly gracefully."""
+    """Check if agent handled an anomaly gracefully (text-based response)."""
     if response.error:
-        # Agent threw an error but didn't crash — check if it's a meaningful error
-        return any(ind in response.error.lower() for ind in ["timeout", "error", "invalid"])
+        return False
 
     summary = response.summary.lower() if response.summary else ""
     if not summary or len(summary.strip()) < 5:
         return False
 
-    # Check if response contains a meaningful error message
     if any(ind in summary for ind in GRACEFUL_INDICATORS):
         return True
 
-    # Only pass if the response is genuinely meaningful and relevant
-    # (not just any long text — gibberish input producing long output should fail)
     if len(summary) > 50:
-        # Check for signs of actual content: structured fields, meaningful words
-        has_fields = any(f in summary for f in ["[", "product", "vcu", "security", "build"])
+        has_fields = any(f in summary for f in ["[", "product", "vcu", "security", "build", "产品", "安全"])
         if has_fields:
             return True
 
@@ -46,10 +41,7 @@ def _is_graceful_response(response: AgentResponse) -> bool:
 def evaluate_anomaly_handling(
     anomaly_responses: list[AgentResponse],
 ) -> dict:
-    """Evaluate how well the agent handles anomaly inputs (E1-E4).
-
-    Returns: {handled_correctly, total, rate, details}
-    """
+    """Evaluate how well the agent handles anomaly inputs (E1-E4)."""
     passed = 0
     details = []
 
@@ -78,22 +70,14 @@ def evaluate_anomaly_handling(
 def evaluate_reasoning_efficiency(
     agent_responses: list[AgentResponse],
 ) -> dict:
-    """Evaluate reasoning efficiency based on processing time consistency.
-
-    For now, uses a proxy: checks if processing times are reasonable
-    (within 2x of median) and not excessively slow.
-
-    Returns: {efficient_count, total, rate, details}
-    """
-    if not agent_responses:
+    """Evaluate reasoning efficiency based on processing time consistency."""
+    valid_responses = [r for r in agent_responses if not r.error and r.processing_time_ms > 0]
+    if not valid_responses:
         return {"efficient_count": 0, "total": 0, "rate": 0.0, "details": []}
 
-    times = [r.processing_time_ms for r in agent_responses if r.processing_time_ms > 0]
-    if not times:
-        return {"efficient_count": 0, "total": 0, "rate": 0.0, "details": []}
-
+    times = [r.processing_time_ms for r in valid_responses]
     median_time = statistics.median(times)
-    threshold = median_time * 3  # 3x median is considered inefficient
+    threshold = median_time * 3
 
     efficient = sum(1 for t in times if t <= threshold)
     total = len(times)
@@ -106,7 +90,8 @@ def evaluate_reasoning_efficiency(
         "details": {
             "median_ms": round(median_time, 2),
             "threshold_ms": round(threshold, 2),
-            "p95_ms": round(sorted(times)[int(len(times) * 0.95)], 2) if len(times) > 1 else times[0],
+            "min_ms": round(min(times), 2),
+            "max_ms": round(max(times), 2),
         },
     }
 
@@ -123,12 +108,9 @@ def evaluate(
     """
     weight = WEIGHTS["system_stability"]
 
-    # Anomaly handling
     if anomaly_responses is None:
         anomaly_responses = []
     anomaly_result = evaluate_anomaly_handling(anomaly_responses)
-
-    # Reasoning efficiency (uses normal responses as proxy)
     efficiency_result = evaluate_reasoning_efficiency(agent_responses)
 
     anomaly_rate = anomaly_result["rate"]

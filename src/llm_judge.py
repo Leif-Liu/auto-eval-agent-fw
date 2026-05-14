@@ -1,4 +1,4 @@
-"""OpenAI LLM-as-a-Judge wrapper for evaluation."""
+"""LLM-as-a-Judge wrapper using OpenAI-compatible API (vLLM)."""
 
 import json
 import logging
@@ -9,7 +9,6 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-# Judge prompt template for Summary Accuracy evaluation
 JUDGE_SUMMARY_PROMPT = """You are an expert evaluator for Defect Description Agent outputs.
 Compare the [Ground Truth Summary] with the [Agent Generated Summary] and score on a 0-100 scale across these dimensions:
 
@@ -25,19 +24,52 @@ Return ONLY a JSON object in this exact format:
 {{"semantic_accuracy": <0-100>, "field_correctness": <0-100>, "summary_quality": <0-100>, "completeness": <0-100>, "reasoning": "<brief explanation>"}}
 """
 
+JUDGE_CONFLICT_PROMPT = """You are an expert evaluator for conflict detection in defect descriptions.
+
+[Original Input Description]: {input_description}
+[Agent Response]: {agent_response}
+[Expected Conflicts]: {expected_conflicts}
+
+The expected conflicts are issues that should be detected in the input. Analyze the agent's response and determine:
+1. For each expected conflict, did the agent correctly identify it? (detected: true/false)
+2. Did the agent report any conflicts that are NOT in the expected list? (false positives)
+
+Return ONLY a JSON object in this exact format:
+{{"detected_count": <number of correctly detected conflicts>, "total_expected": <total expected conflicts>, "false_positives": <number of false positive detections>, "detection_details": [{{"conflict": "<conflict text>", "detected": true/false, "reason": "<brief explanation>"}}], "reasoning": "<brief overall explanation>"}}
+"""
+
+JUDGE_GRAMMAR_PROMPT = """You are an expert evaluator for grammar correction in defect descriptions.
+
+[Original Input Description]: {input_description}
+[Agent Response]: {agent_response}
+[Expected Grammar Errors]: {expected_errors}
+
+The expected grammar errors are issues that should be corrected in the agent's output. Analyze the agent's response and determine:
+1. For each expected error, did the agent correctly fix it? (fixed: true/false)
+2. Did the agent make any unnecessary corrections to text that was already correct? (over_corrections)
+
+Return ONLY a JSON object in this exact format:
+{{"correctly_fixed": <number of correctly fixed errors>, "total_errors": <total expected errors>, "over_corrections": <number of unnecessary changes>, "fix_details": [{{"original": "<original text>", "corrected": "<expected correction>", "fixed": true/false, "reason": "<brief explanation>"}}], "reasoning": "<brief overall explanation>"}}
+"""
+
 
 class LLMJudge:
-    """Wrapper around OpenAI for LLM-as-a-Judge evaluation."""
+    """Wrapper around OpenAI-compatible API for LLM-as-a-Judge evaluation."""
 
     def __init__(
         self,
         api_key: str,
-        model: str = "gpt-4o",
+        base_url: str = None,
+        model: str = "google/gemma-4-31B-it",
         temperature: float = 0.0,
     ):
-        self.client = OpenAI(api_key=api_key)
+        kwargs = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        self.client = OpenAI(**kwargs)
         self.model = model
         self.temperature = temperature
+        logger.info(f"LLM Judge initialized: model={model}, base_url={base_url}")
 
     def judge_summary(
         self,
@@ -45,16 +77,59 @@ class LLMJudge:
         agent_summary: str,
         retries: int = 2,
     ) -> dict:
-        """Judge a single summary against ground truth.
-
-        Returns dict with keys: semantic_accuracy, field_correctness,
-        summary_quality, completeness, reasoning.
-        """
+        """Judge a single summary against ground truth."""
         prompt = JUDGE_SUMMARY_PROMPT.format(
             ground_truth=ground_truth,
             agent_summary=agent_summary,
         )
+        return self._call_with_retry(prompt, retries)
 
+    def judge_conflicts(
+        self,
+        input_description: str,
+        agent_response: str,
+        expected_conflicts: str,
+        retries: int = 2,
+    ) -> dict:
+        """Judge conflict detection quality from the agent's text response."""
+        prompt = JUDGE_CONFLICT_PROMPT.format(
+            input_description=input_description,
+            agent_response=agent_response,
+            expected_conflicts=expected_conflicts,
+        )
+        return self._call_with_retry(prompt, retries)
+
+    def judge_grammar(
+        self,
+        input_description: str,
+        agent_response: str,
+        expected_errors: str,
+        retries: int = 2,
+    ) -> dict:
+        """Judge grammar correction quality from the agent's text response."""
+        prompt = JUDGE_GRAMMAR_PROMPT.format(
+            input_description=input_description,
+            agent_response=agent_response,
+            expected_errors=expected_errors,
+        )
+        return self._call_with_retry(prompt, retries)
+
+    def judge_batch(
+        self,
+        pairs: list[tuple[str, str]],
+        progress_callback: Optional[callable] = None,
+    ) -> list[dict]:
+        """Judge multiple summary pairs sequentially."""
+        results = []
+        for i, (gt, agent_sum) in enumerate(pairs):
+            result = self.judge_summary(gt, agent_sum)
+            results.append(result)
+            if progress_callback:
+                progress_callback(i + 1, len(pairs))
+        return results
+
+    def _call_with_retry(self, prompt: str, retries: int = 2) -> dict:
+        """Call the LLM with retry logic."""
         for attempt in range(retries + 1):
             try:
                 response = self.client.chat.completions.create(
@@ -68,36 +143,15 @@ class LLMJudge:
                 logger.warning(f"LLM judge attempt {attempt + 1} failed: {e}")
                 if attempt == retries:
                     return self._error_result(str(e))
-
         return self._error_result("Max retries exceeded")
-
-    def judge_batch(
-        self,
-        pairs: list[tuple[str, str]],
-        progress_callback: Optional[callable] = None,
-    ) -> list[dict]:
-        """Judge multiple summary pairs sequentially.
-
-        Args:
-            pairs: list of (ground_truth, agent_summary) tuples
-        """
-        results = []
-        for i, (gt, agent_sum) in enumerate(pairs):
-            result = self.judge_summary(gt, agent_sum)
-            results.append(result)
-            if progress_callback:
-                progress_callback(i + 1, len(pairs))
-        return results
 
     def _parse_json_response(self, content: str) -> dict:
         """Parse JSON from LLM response, with fallback extraction."""
-        # Try direct JSON parse
         try:
             return json.loads(content)
         except json.JSONDecodeError:
             pass
 
-        # Try extracting JSON from markdown code block
         json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
         if json_match:
             try:
@@ -105,7 +159,6 @@ class LLMJudge:
             except json.JSONDecodeError:
                 pass
 
-        # Try finding first { ... } block
         brace_match = re.search(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", content, re.DOTALL)
         if brace_match:
             try:

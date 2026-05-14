@@ -8,13 +8,16 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Agent API
-AGENT_BASE_URL = os.getenv("AGENT_BASE_URL", "http://localhost:8080")
-AGENT_TIMEOUT_SEC = int(os.getenv("AGENT_TIMEOUT_SEC", "30"))
+# RAGFlow Agent
+RAGFLOW_API_KEY = os.getenv("RAGFLOW_API_KEY", "")
+RAGFLOW_BASE_URL = os.getenv("RAGFLOW_BASE_URL", "http://10.10.11.7:9380")
+RAGFLOW_AGENT_ID = os.getenv("RAGFLOW_AGENT_ID", "")
+AGENT_TIMEOUT_SEC = int(os.getenv("AGENT_TIMEOUT_SEC", "120"))
 
-# OpenAI
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+# OpenAI / vLLM (LLM Judge)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "vllm")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "http://10.10.11.7:11542/v1")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "google/gemma-4-31B-it")
 LLM_JUDGE_TEMPERATURE = 0.0
 
 # Paths
