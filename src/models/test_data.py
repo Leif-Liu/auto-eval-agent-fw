@@ -1,6 +1,6 @@
 """Pydantic models for test data (Golden Test Set)."""
 
-from enum import Enum
+from enum import Enum, StrEnum
 from pydantic import BaseModel, Field
 
 
@@ -25,6 +25,13 @@ class GrammarErrorAnnotation(BaseModel):
     error_type: str = ""  # e.g., "typo", "tense", "punctuation"
 
 
+class DifficultyLevel(StrEnum):
+    """Difficulty levels for a standard test sample."""
+    EASY = "easy"
+    MEDIUM = "medium"
+    COMPLEX = "complex"
+
+
 class StandardSample(BaseModel):
     """A single test case in the golden test set."""
     sample_id: str
@@ -32,7 +39,7 @@ class StandardSample(BaseModel):
     ground_truth_summary: str
     conflict_annotations: list[ConflictAnnotation] = Field(default_factory=list)
     grammar_error_annotations: list[GrammarErrorAnnotation] = Field(default_factory=list)
-    difficulty: str = "medium"  # easy / medium / complex
+    difficulty: DifficultyLevel = DifficultyLevel.MEDIUM  # easy / medium / complex
     metadata: dict = Field(default_factory=dict)
 
 

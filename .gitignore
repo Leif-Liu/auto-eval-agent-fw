@@ -2,3 +2,5 @@
 __pycache__/
 results/
 .env
+test_data/_backups/
+test_data/_staging/

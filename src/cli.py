@@ -236,5 +236,157 @@ def validate():
         sys.exit(1)
 
 
+@cli.group()
+def dataset():
+    """Test set expansion / data flywheel tooling (import, stats, dedup-check)."""
+    pass
+
+
+@dataset.command("import")
+@click.argument("input_path", type=click.Path(exists=True))
+@click.option("--target", "target", type=click.Path(), default=None,
+              help="Target standard_samples.json (default: TEST_DATA_DIR/standard/standard_samples.json).")
+@click.option("--version", default=None, help="Version tag for this batch (default: DATASET_DEFAULT_VERSION).")
+@click.option("--no-llm", is_flag=True, help="Skip LLM drafting; pure interactive annotation.")
+@click.option("--dry-run", is_flag=True, help="Draft/validate/dedup only; do not write.")
+@click.option("--auto-accept", is_flag=True,
+              help="Accept LLM drafts without prompts (batch mode; cases with no draft are skipped).")
+def dataset_import(input_path, target, version, no_llm, dry_run, auto_accept):
+    """Annotate raw production cases and append them to the golden test set.
+
+    Does NOT require RAGFlow. Uses the vLLM LLM judge to draft candidate
+    annotations which an expert refines; degrades to pure interactive
+    annotation when vLLM is unreachable or --no-llm is set.
+    """
+    from pathlib import Path
+
+    from config import (
+        DATASET_BACKUP_DIR,
+        DATASET_CHANGELOG_PATH,
+        DATASET_DEFAULT_VERSION,
+        DATASET_DEDUP_THRESHOLD,
+    )
+    from src.dataset_tool.pipeline import run_import_workflow
+
+    target_file = Path(target) if target else TEST_DATA_DIR / "standard" / "standard_samples.json"
+    ver = version or DATASET_DEFAULT_VERSION
+
+    if not target_file.exists():
+        console.print(f"[red]Target file not found: {target_file}[/red]")
+        sys.exit(1)
+
+    use_llm = (not no_llm) and bool(OPENAI_API_KEY)
+    llm_judge = None
+    if use_llm:
+        llm_judge = _create_llm_judge()
+        console.print(f"[green]✓[/green] LLM drafting enabled (model: {OPENAI_MODEL})")
+    else:
+        console.print("[yellow]LLM drafting disabled — pure interactive annotation[/yellow]")
+
+    console.print(Panel(f"Flywheel import — {input_path}", style="bold blue"))
+    summary = run_import_workflow(
+        input_path=Path(input_path),
+        console=console,
+        target_file=target_file,
+        version=ver,
+        use_llm=use_llm,
+        dry_run=dry_run,
+        auto_accept=auto_accept,
+        llm_judge=llm_judge,
+        dedup_threshold=DATASET_DEDUP_THRESHOLD,
+        backup_dir=DATASET_BACKUP_DIR,
+        changelog_path=DATASET_CHANGELOG_PATH,
+    )
+
+    table = Table(title="Import Summary")
+    table.add_column("metric", style="cyan")
+    table.add_column("value", style="green", justify="right")
+    for field in ("total_raw", "drafted", "refined", "rejected",
+                  "duplicates_skipped", "validation_errors", "added"):
+        table.add_row(field, str(getattr(summary, field)))
+    console.print(table)
+    console.print(
+        f"[dim]version={summary.version} target={summary.target_file} "
+        f"backup={summary.backup_file} degraded={summary.degraded}[/dim]"
+    )
+
+
+@dataset.command("stats")
+@click.option("--target", "target", type=click.Path(exists=True), default=None,
+              help="Standard samples file (default: TEST_DATA_DIR/standard/standard_samples.json).")
+def dataset_stats(target):
+    """Show distribution stats and balance hints for the standard test set."""
+    from pathlib import Path
+
+    from src.data.loader import load_standard_samples
+    from src.dataset_tool.stats import describe_distribution, suggest_balance_action
+
+    target_file = Path(target) if target else TEST_DATA_DIR / "standard" / "standard_samples.json"
+    samples = load_standard_samples(target_file)
+    report = describe_distribution(samples)
+
+    def _rows(d, label):
+        return [(f"  {label}: {k}", str(v)) for k, v in sorted(d.items())]
+
+    table = Table(title=f"Dataset Distribution (n={report.total})")
+    table.add_column("bucket", style="cyan")
+    table.add_column("count", style="green", justify="right")
+    for k, v in sorted(report.by_difficulty.items()):
+        table.add_row(f"difficulty: {k}", str(v))
+    for r in _rows(report.by_metadata_source, "source"):
+        table.add_row(*r)
+    for r in _rows(report.summary_length_buckets, "summary_len"):
+        table.add_row(*r)
+    for r in _rows(report.conflict_density, "conflicts"):
+        table.add_row(*r)
+    for r in _rows(report.grammar_density, "grammar_errors"):
+        table.add_row(*r)
+    table.add_row("structured_header", str(report.field_coverage.get("structured_header", 0)))
+    console.print(table)
+
+    hints = suggest_balance_action(report)
+    if hints:
+        console.print("[yellow]Balance hints:[/yellow]")
+        for h in hints:
+            console.print(f"  • {h}")
+    else:
+        console.print("[green]Difficulty distribution within target range.[/green]")
+
+
+@dataset.command("dedup-check")
+@click.argument("candidates_file", type=click.Path(exists=True))
+@click.option("--target", "target", type=click.Path(exists=True), default=None,
+              help="Existing standard samples to compare against (default: the golden set).")
+@click.option("--threshold", type=float, default=None, help="Similarity threshold (default: DATASET_DEDUP_THRESHOLD).")
+def dataset_dedup_check(candidates_file, target, threshold):
+    """Check a candidate samples file for near-duplicates against the golden set."""
+    from pathlib import Path
+
+    from config import DATASET_DEDUP_THRESHOLD
+    from src.data.loader import load_standard_samples
+    from src.data.writer import find_duplicates
+
+    candidates = load_standard_samples(Path(candidates_file))
+    existing_path = Path(target) if target else TEST_DATA_DIR / "standard" / "standard_samples.json"
+    existing = load_standard_samples(existing_path) if existing_path.exists() else []
+    thr = threshold if threshold is not None else DATASET_DEDUP_THRESHOLD
+    hits = find_duplicates(candidates, existing, threshold=thr)
+
+    if not hits:
+        console.print(f"[green]No duplicates above threshold {thr} "
+                      f"({len(candidates)} candidates vs {len(existing)} existing).[/green]")
+        return
+
+    table = Table(title=f"Duplicate Check (threshold={thr})")
+    table.add_column("candidate", style="cyan")
+    table.add_column("↔ existing", style="magenta")
+    table.add_column("similarity", justify="right")
+    table.add_column("verdict")
+    for h in hits:
+        cand_id = candidates[h.candidate_idx].sample_id
+        table.add_row(cand_id, h.existing_sample_id, str(h.similarity), h.verdict)
+    console.print(table)
+
+
 if __name__ == "__main__":
     cli()

@@ -24,6 +24,13 @@ LLM_JUDGE_TEMPERATURE = 0.0
 TEST_DATA_DIR = Path(os.getenv("TEST_DATA_DIR", str(BASE_DIR / "test_data")))
 RESULTS_DIR = Path(os.getenv("RESULTS_DIR", str(BASE_DIR / "results")))
 
+# Dataset flywheel tooling (test set expansion / re-evaluation)
+DATASET_STAGING_DIR = Path(os.getenv("DATASET_STAGING_DIR", str(TEST_DATA_DIR / "_staging")))
+DATASET_BACKUP_DIR = Path(os.getenv("DATASET_BACKUP_DIR", str(TEST_DATA_DIR / "_backups")))
+DATASET_CHANGELOG_PATH = Path(os.getenv("DATASET_CHANGELOG_PATH", str(BASE_DIR / "CHANGELOG.md")))
+DATASET_DEFAULT_VERSION = os.getenv("DATASET_DEFAULT_VERSION", "0.1.0")
+DATASET_DEDUP_THRESHOLD = float(os.getenv("DATASET_DEDUP_THRESHOLD", "0.85"))
+
 # Dimension weights (from proposal v3.0)
 WEIGHTS = {
     "summary_accuracy": 0.30,
