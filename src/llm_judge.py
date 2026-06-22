@@ -70,6 +70,28 @@ Return ONLY a JSON object in this exact format:
 {{"ground_truth_summary": "...", "conflict_annotations": [...], "grammar_error_annotations": [...], "difficulty": "easy|medium|complex", "draft_confidence": <0-1>, "draft_notes": "..."}}
 """
 
+EVOLUTION_INSIGHT_PROMPT = """你是 Defect Description Agent 的能力演进分析师。下面是该 Agent 历次完整评估 run 的量化摘要（每轮 = 一次全量评估）。请只依据这些数据，用**简体中文**写一段客观、数据驱动的演进分析，不要编造未给出的数字。
+
+[评估历史量化摘要]
+{digest}
+
+请严格按以下结构输出（使用 Markdown 小标题，不要输出 JSON）：
+
+## 总体趋势
+一句话总结从首轮到末轮总分与成熟度的变化，给出净增/降幅度。
+
+## 维度改进与回退
+依据各维度的改进斜率(slope)：逐维度说明谁在持续进步、谁在停滞、谁在回退，引用具体斜率与首末分数。
+
+## 关键拐点
+若存在单轮波动最大的 run，指出其 run_id、波动幅度及可能涉及的维度；若无显著拐点则说明趋势平稳。
+
+## 下一步优化建议
+给出 2-3 条最值得投入的优化方向，按预期收益排序。
+
+要求：语言精炼，全文控制在 300 字以内。
+"""
+
 
 class LLMJudge:
     """Wrapper around OpenAI-compatible API for LLM-as-a-Judge evaluation."""
@@ -152,6 +174,21 @@ class LLMJudge:
         )
         return self._call_with_retry(prompt, retries)
 
+    def judge_evolution(
+        self,
+        digest: str,
+        retries: int = 2,
+    ) -> str:
+        """Generate a Chinese narrative analysis of agent capability evolution.
+
+        Reads a compact quantitative digest of historical runs and returns
+        free-form Markdown prose (NOT JSON), so it uses a plain text-completion
+        path rather than the structured-output fallback machinery. Returns an
+        empty string on failure so callers can degrade gracefully.
+        """
+        prompt = EVOLUTION_INSIGHT_PROMPT.format(digest=digest)
+        return self._call_text_with_retry(prompt, retries)
+
     def judge_batch(
         self,
         pairs: list[tuple[str, str]],
@@ -166,8 +203,13 @@ class LLMJudge:
                 progress_callback(i + 1, len(pairs))
         return results
 
-    def _call_with_retry(self, prompt: str, retries: int = 2) -> dict:
-        """Call the LLM with retry logic."""
+    def _call_raw(self, prompt: str, retries: int = 2) -> str:
+        """Call the LLM and return the stripped raw content, with retry.
+
+        Shared by the structured (JSON) and free-text judges. Returns "" on
+        failure so callers degrade consistently; the exception detail is kept
+        in the warning log.
+        """
         for attempt in range(retries + 1):
             try:
                 response = self.client.chat.completions.create(
@@ -175,13 +217,23 @@ class LLMJudge:
                     temperature=self.temperature,
                     messages=[{"role": "user", "content": prompt}],
                 )
-                content = response.choices[0].message.content.strip()
-                return self._parse_json_response(content)
+                return response.choices[0].message.content.strip()
             except Exception as e:
-                logger.warning(f"LLM judge attempt {attempt + 1} failed: {e}")
+                logger.warning(f"LLM attempt {attempt + 1} failed: {e}")
                 if attempt == retries:
-                    return self._error_result(str(e))
-        return self._error_result("Max retries exceeded")
+                    return ""
+        return ""
+
+    def _call_with_retry(self, prompt: str, retries: int = 2) -> dict:
+        """Call the LLM with retry, then parse the JSON response."""
+        content = self._call_raw(prompt, retries)
+        if not content:
+            return self._error_result("Empty or failed response")
+        return self._parse_json_response(content)
+
+    def _call_text_with_retry(self, prompt: str, retries: int = 2) -> str:
+        """Call the LLM and return raw text (no JSON parsing), with retry."""
+        return self._call_raw(prompt, retries)
 
     def _parse_json_response(self, content: str) -> dict:
         """Parse JSON from LLM response, with fallback extraction."""

@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from src.models.evaluation_result import DimensionScore, CompositeResult
+from src.models.monitoring import DimensionSlope, MaturityStep
 
 
 def _save_figure(fig: plt.Figure, output_path: Path | None, default_name: str) -> str:
@@ -137,3 +138,98 @@ def build_trend_chart(
 
     plt.tight_layout()
     return _save_figure(fig, output_path, "trend_chart.png")
+
+
+def build_maturity_chart(
+    trajectory: list[MaturityStep],
+    output_path: Optional[Path] = None,
+) -> str:
+    """Generate a step chart of the L1 -> L4 maturity ladder over runs.
+
+    Args:
+        trajectory: Maturity steps (oldest first).
+        output_path: Where to save the PNG.
+
+    Returns:
+        Path to the saved chart, or "" if trajectory is empty.
+    """
+    if not trajectory:
+        return ""
+
+    labels = [m.run_id for m in trajectory]
+    codes = [m.level_code for m in trajectory]
+    totals = [m.total_score for m in trajectory]
+    x = list(range(len(labels)))
+
+    fig, ax = plt.subplots(figsize=(max(8, len(labels) * 1.2), 5))
+    ax.step(x, codes, where="mid", linewidth=2.5, color="#2196F3",
+            marker="o", markersize=8, label="Maturity level")
+
+    # Annotate each point with level label + total score.
+    for xi, code, total, label in zip(x, codes, totals, labels):
+        ax.annotate(
+            f"L{code}\n{total:.1f}",
+            (xi, code),
+            textcoords="offset points",
+            xytext=(0, 10),
+            ha="center",
+            fontsize=8,
+        )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=9)
+    ax.set_yticks([1, 2, 3, 4])
+    ax.set_yticklabels(["L1 - Initial", "L2 - Growing", "L3 - Mature", "L4 - Excellent"], fontsize=9)
+    ax.set_ylim(0.5, 4.5)
+    ax.set_title("Agent Maturity Trajectory (L1 → L4)", fontsize=14)
+    ax.grid(True, axis="y", alpha=0.3)
+
+    if len(labels) > 5:
+        plt.xticks(rotation=45, ha="right")
+
+    plt.tight_layout()
+    return _save_figure(fig, output_path, "maturity_chart.png")
+
+
+def build_slope_chart(
+    slopes: list[DimensionSlope],
+    output_path: Optional[Path] = None,
+) -> str:
+    """Generate a horizontal bar chart of per-dimension improvement slopes.
+
+    Args:
+        slopes: Dimension slopes (any order; sorted desc upstream).
+        output_path: Where to save the PNG.
+
+    Returns:
+        Path to the saved chart, or "" if slopes is empty.
+    """
+    if not slopes:
+        return ""
+
+    names = [s.dimension_name for s in slopes]
+    vals = [s.slope for s in slopes]
+    colors = [
+        "#4CAF50" if s.trend == "improving"
+        else "#F44336" if s.trend == "declining"
+        else "#9E9E9E"
+        for s in slopes
+    ]
+
+    fig, ax = plt.subplots(figsize=(10, max(4, len(names) * 0.6)))
+    y = list(range(len(names)))
+    ax.barh(y, vals, color=colors)
+
+    for yi, val in zip(y, vals):
+        ax.text(val, yi, f" {val:+.2f}", va="center", fontsize=9,
+                color="#333")
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(names, fontsize=10)
+    ax.axvline(0, color="#333", linewidth=0.8)
+    ax.set_xlabel("Improvement rate (points / run)", fontsize=11)
+    ax.set_title("Per-Dimension Improvement Slope", fontsize=14)
+    ax.invert_yaxis()  # top improver on top
+
+    plt.tight_layout()
+    return _save_figure(fig, output_path, "slope_chart.png")

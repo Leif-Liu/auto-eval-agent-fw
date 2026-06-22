@@ -60,6 +60,10 @@ STABILITY_WEIGHTS = {
     "reasoning_efficiency": 0.50,
 }
 
+# Evolution dashboard (monitoring agent) — capability growth across iterations
+MONITORING_REGRESSION_THRESHOLD = float(os.getenv("MONITORING_REGRESSION_THRESHOLD", "-3.0"))
+MONITORING_SLOPE_MIN_RUNS = int(os.getenv("MONITORING_SLOPE_MIN_RUNS", "3"))
+
 # Maturity levels
 MATURITY_LEVELS = [
     (90, "L4 - Excellent"),

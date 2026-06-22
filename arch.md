@@ -20,7 +20,8 @@ agent-evaluation-framework/
 │   ├── models/                 # Pydantic 数据模型
 │   │   ├── test_data.py        #   测试集模型
 │   │   ├── agent_response.py   #   Agent 响应模型
-│   │   └── evaluation_result.py #   评估结果模型
+│   │   ├── evaluation_result.py #   评估结果模型
+│   │   └── monitoring.py       #   演进指标视图模型（派生）
 │   ├── data/
 │   │   └── loader.py           # 测试数据加载器
 │   ├── evaluation/             # 维度评估模块
@@ -30,10 +31,13 @@ agent-evaluation-framework/
 │   │   ├── grammar_correction.py # 语法纠错 (20%)
 │   │   ├── system_stability.py #   系统稳定性 (10%)
 │   │   └── output_quality.py   #   输出质量 (15%, 占位)
+│   ├── monitoring/             # 演进监控 / Dashboard（监控 Agent）
+│   │   ├── metrics.py          #   确定性指标：Δ / 成熟度轨迹 / 维度斜率
+│   │   └── dashboard.py        #   rich 表格渲染 + 图表编排 + LLM 洞察
 │   └── reporting/
 │       ├── score_calculator.py #   综合得分 + 成熟度评级
 │       ├── report_generator.py #   JSON 报告生成
-│       └── chart_builder.py    #   雷达图 + 趋势图
+│       └── chart_builder.py    #   雷达图 + 趋势图 + 成熟度/斜率图
 └── test_data/                  # 测试数据（JSON）
     ├── standard/               #   标准测试样本 (5条)
     ├── anomaly/                #   异常用例 (5条, E1-E4)
@@ -218,6 +222,38 @@ STEP 7: 数据飞轮 ─── [持续]
 | **雷达图** | `build_radar_chart()` | 当前 run 的五维度能力分布 |
 | **报告归档** | `results/YYYY-MM-DD_HHMMSS/` 目录结构 | 每次 run 独立目录，JSON + 图表完整保留 |
 
+### 演进监控 Dashboard（监控 Agent）
+
+在多轮评估归档之上，`src/monitoring/` 提供一个**只读、离线优先**的"监控 Agent"，量化被评估 Agent 的能力随迭代提升与演进的进度。数据源完全是现有 `results/*/report.json` 历史，无需生产部署或额外数据库。
+
+```
+eval-framework dashboard [--limit N] [--charts] [--no-insight]
+    │
+    ▼  src/monitoring/dashboard.py
+    ├─ load_previous_results(RESULTS_DIR, limit)      # 复用 reporting
+    ├─ metrics.compute_run_deltas()                    # 逐轮 Δ（≤ 阈值标红）
+    ├─ metrics.compute_maturity_trajectory()           # L1→L4 阶梯轨迹
+    ├─ metrics.compute_dimension_slopes()              # 各维度线性回归斜率 + R²
+    ├─ rich 表格输出（Δ / 成熟度 / 斜率）→ 终端
+    ├─ --charts → chart_builder 成熟度阶梯图 + 斜率条形图 → results/monitoring/*.png
+    └─ 非 --no-insight 且 vLLM 可达 → llm_judge.judge_evolution(digest) → 中文演进叙事
+```
+
+| 组件 | 位置 | 职责 |
+|------|------|------|
+| 指标计算 | `src/monitoring/metrics.py` | 纯函数，输入 `list[CompositeResult]` → `RunDelta` / `MaturityStep` / `DimensionSlope` / `EvolutionDigest`（numpy `polyfit` 求斜率） |
+| 视图模型 | `src/models/monitoring.py` | 派生指标的 Pydantic 模型（非持久化，仅渲染/喂给 LLM） |
+| 渲染编排 | `src/monitoring/dashboard.py` | rich 表格 + 图表编排 + LLM 洞察调用，失败均降级不中断 |
+| LLM 洞察 | `src/llm_judge.py::judge_evolution()` | 复用 vLLM，`temperature=0.0`，读量化摘要生成中文叙事（自由文本，走 `_call_text_with_retry` 而非 JSON fallback） |
+| 图表 | `src/reporting/chart_builder.py` | 新增 `build_maturity_chart()` + `build_slope_chart()`，复用 Agg 后端 |
+| 配置 | `config/__init__.py` | `MONITORING_REGRESSION_THRESHOLD`（Δ 标红阈值，默认 -3.0）、`MONITORING_SLOPE_MIN_RUNS`（算斜率最少轮数，默认 3） |
+
+**设计要点**：
+- **离线优先**：`dashboard` 不要求 RAGFlow；仅 LLM 洞察需要 vLLM，不可达时 warning 跳过（沿用 `dataset import` 的 degraded 模式）。
+- **图表默认关**：终端表格为主交付物，`--charts` 显式开启 PNG（写入 `results/monitoring/`，不污染单次 run 目录）。
+- **边界安全**：0 轮（友好提示）/ 1~2 轮（斜率 N/A）/ 旧报告缺维度（安全跳过）均有处理。
+- **零新依赖**：numpy / matplotlib / rich / pydantic 均已在 `pyproject.toml`。
+
 ### 演进路径
 
 ```
@@ -288,6 +324,9 @@ eval-framework run                           # 全量评估
 eval-framework run -d conflict_detection -d grammar_correction  # 指定维度
 eval-framework run --baseline results/2026-05-10_143022/report.json  # 基线对比
 eval-framework report                        # 查看历史报告
+eval-framework dashboard --no-insight        # 演进监控（离线：Δ / 成熟度轨迹 / 维度斜率）
+eval-framework dashboard --charts            # 同上 + 成熟度/斜率 PNG 图表
+eval-framework dashboard                     # 同上 + vLLM 中文演进叙事（监控 Agent）
 ```
 
 ## 环境变量
@@ -303,3 +342,5 @@ eval-framework report                        # 查看历史报告
 | `AGENT_TIMEOUT_SEC` | 请求超时（秒） | `120` |
 | `TEST_DATA_DIR` | 测试数据目录 | `./test_data` |
 | `RESULTS_DIR` | 结果输出目录 | `./results` |
+| `MONITORING_REGRESSION_THRESHOLD` | 演进面板：Δ 标红阈值（vs 上轮总分） | `-3.0` |
+| `MONITORING_SLOPE_MIN_RUNS` | 演进面板：计算维度斜率所需最少轮数 | `3` |

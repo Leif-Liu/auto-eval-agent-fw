@@ -206,6 +206,43 @@ def report(results_dir):
 
 
 @cli.command()
+@click.option("--results-dir", "results_dir", type=click.Path(), default=None,
+              help="Results directory to read (default: RESULTS_DIR).")
+@click.option("--limit", type=int, default=50,
+              help="Max number of most-recent runs to analyze (slopes/deltas computed over this window).")
+@click.option("--charts", is_flag=True, help="Also render maturity + slope PNG charts under results/monitoring/.")
+@click.option("--no-insight", is_flag=True, help="Skip the LLM evolution-narrative analysis (offline mode).")
+def dashboard(results_dir, limit, charts, no_insight):
+    """Quantify the evaluated agent's capability growth across iterations.
+
+    Aggregates archived runs under results/ into run-over-run deltas, the
+    L1->L4 maturity trajectory, and per-dimension improvement slopes. Optionally
+    renders PNG charts and an LLM-generated Chinese evolution narrative.
+
+    Does NOT require RAGFlow; the insight narrative needs vLLM (OPENAI_*).
+    """
+    from src.monitoring.dashboard import render_dashboard
+
+    rd = Path(results_dir) if results_dir else RESULTS_DIR
+
+    llm_judge = None
+    if not no_insight:
+        if not OPENAI_API_KEY:
+            console.print("[yellow]OPENAI_API_KEY not set — insight narrative disabled.[/yellow]")
+        else:
+            llm_judge = _create_llm_judge()
+
+    render_dashboard(
+        console=console,
+        results_dir=rd,
+        limit=limit,
+        charts=charts,
+        insight=(not no_insight),
+        llm_judge=llm_judge,
+    )
+
+
+@cli.command()
 def validate():
     """Validate all test data JSON files against schemas."""
     from src.data.loader import load_test_data, get_dataset_stats
