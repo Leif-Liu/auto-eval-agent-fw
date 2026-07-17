@@ -19,7 +19,15 @@ from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import (
+    AssistantMessage,
     ClaudeAgentOptions,
+    ResultMessage,
+    SystemMessage,
+    TextBlock,
+    ThinkingBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
     create_sdk_mcp_server,
     query,
     tool,
@@ -236,22 +244,92 @@ def _default_prompt() -> str:
     )
 
 
-async def run_agent(user_prompt: str | None = None) -> str:
-    """Run the code-reader agent loop and return the final text."""
+def _preview(text: str, width: int = 200) -> str:
+    """One-line preview of a potentially long string."""
+    single = " ".join(text.split())
+    return single if len(single) <= width else single[:width] + " …"
+
+
+async def run_agent(user_prompt: str | None = None, *, verbose: bool = False) -> str:
+    """Run the code-reader agent loop and return the final text.
+
+    When `verbose` is True, print a trace of every message yielded by
+    `query` — AssistantMessage text/tool_use blocks, UserMessage
+    tool_result blocks, SystemMessage subtypes, and the terminal
+    ResultMessage — so the full agent loop (tool call → tool result →
+    next assistant turn) is visible.
+    """
     options = _build_options()
     prompt = user_prompt or _default_prompt()
 
     final_text = ""
+    turn = 0
     async for message in query(prompt=prompt, options=options):
         kind = type(message).__name__
-        if kind == "AssistantMessage":
+        turn += 1
+
+        if verbose:
+            print(f"[turn {turn:02d}] >>> {kind}")
+
+        if isinstance(message, AssistantMessage):
+            if verbose and message.model:
+                print(f"          model={message.model} stop_reason={message.stop_reason}")
             for block in message.content:
-                if getattr(block, "type", None) == "text":
+                if isinstance(block, TextBlock):
+                    if verbose:
+                        print(f"          · text: {_preview(block.text)}")
                     final_text = block.text  # keep the latest text block
-        elif kind == "ResultMessage":
+                elif isinstance(block, ToolUseBlock):
+                    if verbose:
+                        raw = block.input
+                        input_preview = _preview(str(raw)) if raw else "(empty)"
+                        print(f"          · tool_use: {block.name} id={block.id} input={input_preview}")
+                elif isinstance(block, ThinkingBlock):
+                    if verbose:
+                        print(f"          · thinking: {_preview(block.thinking)}")
+                elif verbose:
+                    print(f"          · {type(block).__name__}: (unhandled block)")
+        elif isinstance(message, UserMessage):
+            if verbose:
+                content = getattr(message, "content", "")
+                if isinstance(content, str):
+                    print(f"          · user text: {_preview(content)}")
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, ToolResultBlock):
+                            raw = block.content
+                            if isinstance(raw, list):
+                                text = " ".join(
+                                    getattr(b, "text", str(b)) for b in raw
+                                )
+                            else:
+                                text = str(raw) if raw else "(empty)"
+                            print(
+                                f"          · tool_result: id={block.tool_use_id}"
+                                f" is_error={block.is_error} → {_preview(text)}"
+                            )
+                        elif isinstance(block, TextBlock):
+                            print(f"          · text: {_preview(block.text)}")
+                        else:
+                            print(f"          · {type(block).__name__}: (non-tool block)")
+        elif isinstance(message, SystemMessage):
+            if verbose:
+                print(f"          · subtype={message.subtype} data={_preview(str(message.data))}")
+        elif isinstance(message, ResultMessage):
             if message.result:
                 final_text = message.result
-        # UserMessage / SystemMessage / StreamEvent / RateLimitEvent: ignored
+            if verbose:
+                print(
+                    f"          · subtype={message.subtype} num_turns={message.num_turns}"
+                    f" duration_ms={message.duration_ms} is_error={message.is_error}"
+                    f" stop_reason={message.stop_reason}"
+                )
+                if message.result:
+                    print(f"          · result: {_preview(message.result)}")
+        else:
+            # StreamEvent / RateLimitInfo / others: not surfaced
+            if verbose:
+                print(f"          · (ignored)")
     return final_text
 
 
@@ -259,7 +337,8 @@ def main() -> None:
     print(f"[code-reader-agent] model={DEFAULT_MODEL}")
     print(f"[code-reader-agent] base_url={os.environ.get('ANTHROPIC_BASE_URL')}")
     print("-" * 60)
-    result = asyncio.run(run_agent())
+    result = asyncio.run(run_agent(verbose=True))
+    print("-" * 60)
     print(result)
 
 
