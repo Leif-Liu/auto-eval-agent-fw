@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import (
+    AgentDefinition,
     AssistantMessage,
     ClaudeAgentOptions,
     ResultMessage,
@@ -216,12 +218,25 @@ async def get_project_architecture(args: dict[str, Any]) -> dict[str, Any]:
 # Runner
 # ---------------------------------------------------------------------------
 
-def _build_options() -> ClaudeAgentOptions:
+def _build_options(
+    *,
+    extra_agents: dict[str, AgentDefinition] | None = None,
+) -> ClaudeAgentOptions:
+    """Build ClaudeAgentOptions.
+
+    Pass ``extra_agents`` to register programmatic (runtime) subagents
+    invokable via the Agent tool alongside any disk-based agents in
+    ``.claude/agents/`` (which are auto-loaded because setting_sources
+    defaults to None = all sources). When non-empty, the ``Agent`` tool
+    is added to allowed_tools so the model can dispatch subagents.
+    Default behavior is unchanged when extra_agents is None.
+    """
     server = create_sdk_mcp_server(
         name="code-reader",
         version="1.0.0",
         tools=[list_files, read_file, search_code, get_project_architecture],
     )
+    needs_agent_tool = bool(extra_agents)
     return ClaudeAgentOptions(
         model=DEFAULT_MODEL,
         system_prompt=SYSTEM_PROMPT,
@@ -231,6 +246,10 @@ def _build_options() -> ClaudeAgentOptions:
         permission_mode="bypassPermissions",
         cwd=str(PROJECT_ROOT),
         max_turns=50,
+        # "Agent" is the tool name for dispatching subagents. Only added when
+        # extra_agents is set so default runs stay tool-set-minimal.
+        **({"allowed_tools": ["Agent"]} if needs_agent_tool else {}),
+        **({"agents": extra_agents} if extra_agents is not None else {}),
     )
 
 
@@ -250,7 +269,12 @@ def _preview(text: str, width: int = 200) -> str:
     return single if len(single) <= width else single[:width] + " …"
 
 
-async def run_agent(user_prompt: str | None = None, *, verbose: bool = False) -> str:
+async def run_agent(
+    user_prompt: str | None = None,
+    *,
+    verbose: bool = False,
+    extra_agents: dict[str, AgentDefinition] | None = None,
+) -> str:
     """Run the code-reader agent loop and return the final text.
 
     When `verbose` is True, print a trace of every message yielded by
@@ -258,8 +282,13 @@ async def run_agent(user_prompt: str | None = None, *, verbose: bool = False) ->
     tool_result blocks, SystemMessage subtypes, and the terminal
     ResultMessage — so the full agent loop (tool call → tool result →
     next assistant turn) is visible.
+
+    When `extra_agents` is provided, those programmatic subagents are
+    registered alongside disk-based agents in `.claude/agents/` (auto-
+    loaded via the default setting_sources). The caller's prompt can
+    then name any of them for the model to dispatch via the Agent tool.
     """
-    options = _build_options()
+    options = _build_options(extra_agents=extra_agents)
     prompt = user_prompt or _default_prompt()
 
     final_text = ""
@@ -333,11 +362,48 @@ async def run_agent(user_prompt: str | None = None, *, verbose: bool = False) ->
     return final_text
 
 
+def _mixed_test_prompt() -> str:
+    """Prompt for the mixed runtime/disk subagent dispatch test."""
+    return (
+        "Dispatch BOTH subagents: (1) code-reviewer to review src/cli.py "
+        "for 2 findings, (2) architecture-flow-analyzer to list its 5 "
+        "methodology phases. Then combine outputs in 3 sentences."
+    )
+
+
+def _runtime_reviewer() -> AgentDefinition:
+    """Runtime (programmatic) code-reviewer subagent for the mix test."""
+    return AgentDefinition(
+        description=(
+            "Expert code reviewer. Use for code quality findings with "
+            "file:line citations."
+        ),
+        prompt="Review code briefly. Cite file:line. Max 3 findings.",
+        tools=["Read", "Glob", "Grep"],
+        model="inherit",
+    )
+
+
 def main() -> None:
+    # mode: "default" (no args) or "mix" (mixed runtime/disk subagent test).
+    mode = sys.argv[1] if len(sys.argv) > 1 else "default"
     print(f"[code-reader-agent] model={DEFAULT_MODEL}")
     print(f"[code-reader-agent] base_url={os.environ.get('ANTHROPIC_BASE_URL')}")
+    print(f"[code-reader-agent] mode={mode}")
     print("-" * 60)
-    result = asyncio.run(run_agent(verbose=True))
+    if mode == "mix":
+        result = asyncio.run(
+            run_agent(
+                user_prompt=_mixed_test_prompt(),
+                verbose=True,
+                extra_agents={"code-reviewer": _runtime_reviewer()},
+            )
+        )
+    elif mode == "default":
+        result = asyncio.run(run_agent(verbose=True))
+    else:
+        print(f"unknown mode: {mode!r} (expected 'default' or 'mix')")
+        return
     print("-" * 60)
     print(result)
 
