@@ -2,3 +2,13 @@
 __pycache__/
 results/
 .env
+
+# Local data (regenerated / non-portable)
+test_data/_backups/
+test_data/_staging/
+
+# Claude Code local state (selected artifacts only — other .claude/ files stay committable)
+.claude/agent-memory/
+.claude/agents/project-architect.md
+.claude/agents/project-coder.md
+.claude/skills/
