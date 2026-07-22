@@ -179,3 +179,31 @@ def build_propose_hooks() -> dict[str, list]:
     """
     from claude_agent_sdk import HookMatcher  # lazy: keep mock-mode import-free
     return {"PreToolUse": [HookMatcher(matcher=None, hooks=[force_ask_propose_options])]}
+
+
+async def force_ask_all(
+    hook_input: Any, tool_use_id: str | None, context: Any
+) -> dict[str, Any]:
+    """PreToolUse hook forcing *every* tool call through ``can_use_tool``.
+
+    ``default`` permission mode auto-allows read-only tools (Glob/Grep/Read,
+    and read-only Bash commands like ``find``/``ls``), so they never reach the
+    ``can_use_tool`` callback. This hook returns ``permissionDecision="ask"``
+    for every tool, so :class:`TerminalApprovalHandler` gets to gate each one —
+    the right behavior for the permission-approval scenario.
+    """
+    _ = tool_use_id, context
+    tool_name = (hook_input.get("tool_name") if isinstance(hook_input, dict) else "") or ""
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "ask",
+            "permissionDecisionReason": f"User must approve {tool_name}.",
+        }
+    }
+
+
+def build_force_ask_hooks() -> dict[str, list]:
+    """Build hooks forcing every tool through ``can_use_tool``."""
+    from claude_agent_sdk import HookMatcher
+    return {"PreToolUse": [HookMatcher(matcher=None, hooks=[force_ask_all])]}

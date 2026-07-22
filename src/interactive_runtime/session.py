@@ -23,9 +23,10 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     ResultMessage,
     TextBlock,
+    ToolUseBlock,
 )
 
-from .handlers import ToolApprovalHandler, build_propose_hooks
+from .handlers import ToolApprovalHandler, build_force_ask_hooks, build_propose_hooks
 from .tools import build_mcp_server
 
 
@@ -64,10 +65,14 @@ class InteractiveSession:
         handler: ToolApprovalHandler,
         *,
         include_propose_tool: bool = True,
+        force_ask_all: bool = False,
+        trace: bool = False,
     ) -> None:
         self.spec = spec
         self.handler = handler
         self.include_propose_tool = include_propose_tool
+        self.force_ask_all = force_ask_all
+        self.trace = trace  # set True to log tool_use blocks to stderr
         self._client: ClaudeSDKClient | None = None
 
     async def __aenter__(self) -> "InteractiveSession":
@@ -82,9 +87,14 @@ class InteractiveSession:
             max_turns=self.spec.max_turns,
             can_use_tool=self.handler,  # the HITL hook
             **({"mcp_servers": mcp_servers} if mcp_servers else {}),
-            # Force propose_options through can_use_tool — MCP tools are
-            # auto-allowed otherwise and the choice handler would never fire.
-            **({"hooks": build_propose_hooks()} if self.include_propose_tool else {}),
+            # PreToolUse hook set — route tools into can_use_tool that default
+            # mode would otherwise auto-allow:
+            #   force_ask_all      → every tool (read-only Bash/Glob/... too)
+            #   include_propose_tool → only propose_options (MCP auto-allowed)
+            **({
+                "hooks": build_force_ask_hooks() if self.force_ask_all
+                else build_propose_hooks()
+            } if (self.force_ask_all or self.include_propose_tool) else {}),
             **self.spec.extra_options,
         )
         client = ClaudeSDKClient(options=options)
@@ -109,6 +119,12 @@ class InteractiveSession:
                 for block in msg.content:
                     if isinstance(block, TextBlock):
                         final = block.text  # keep latest assistant text
+                    elif isinstance(block, ToolUseBlock) and self.trace:
+                        import sys
+                        print(
+                            f"[trace] tool_use: {block.name} input={block.input}",
+                            file=sys.stderr,
+                        )
             elif isinstance(msg, ResultMessage):
                 if msg.result:
                     final = msg.result  # authoritative final text

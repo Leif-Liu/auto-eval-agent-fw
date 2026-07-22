@@ -55,10 +55,13 @@ CHOOSE_SPEC = InteractiveAgentSpec(
 
 async def run_approve() -> None:
     print("=== Scenario 1: permission approval ===")
-    async with InteractiveSession(APPROVE_SPEC, TerminalApprovalHandler()) as s:
+    async with InteractiveSession(
+        APPROVE_SPEC, TerminalApprovalHandler(),
+        include_propose_tool=False, force_ask_all=True,
+    ) as s:
         final = await s.run(
-            "Look at the files in the current directory and tell me how many "
-            "Python files there are."
+            "Use the bash tool to run `find . -name '*.py' | wc -l` and "
+            "report the count of Python files."
         )
     print("\n--- final ---")
     print(final)
