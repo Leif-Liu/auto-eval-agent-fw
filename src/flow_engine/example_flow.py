@@ -32,6 +32,10 @@ import argparse
 import asyncio
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from .agents import AgentSpec
 from .runtime import InteractiveHitl, PauseResumeHitl, execute
 from .types import Checkpoint, Flow, HumanSpec, PendingApproval, Step, StepOutput
