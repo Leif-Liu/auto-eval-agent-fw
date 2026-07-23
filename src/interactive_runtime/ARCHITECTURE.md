@@ -183,19 +183,45 @@ example.approve → InteractiveSession(spec, TerminalApprovalHandler(), force_as
 
 ```
 example.choose → InteractiveSession(spec, TerminalChoiceHandler())  # include_propose_tool=True
-  │
-  ├─ __aenter__: ClaudeSDKClient + mcp_servers={propose_options} + hooks=build_propose_hooks()
-  ├─ run(prompt):
-  │    agent 调 propose_options(options=[A,B,C])
-  │      → PreToolUse hook(force_ask_propose_options) 返回 ask
-  │      → can_use_tool(TerminalChoiceHandler)
-  │      → print [choose] + pick 1-3 >    ← 用户交互
-  │      → 选 2 → PermissionResultAllow(updated_input={options:[B], selected:B})
-  │      → CLI 用 updated_input 执行工具 → 返回 "User selected: B"
-  │    → agent 基于选中继续
-  │    → ResultMessage → final text
-  └─ __aexit__: disconnect
+  __aenter__: ClaudeSDKClient + mcp_servers={propose_options} + hooks=build_propose_hooks()
+  run(prompt)  —— 时序展开 ↓
+    client.query(prompt)         CHOOSE_SPEC系统提示词+run_choose用户提示词，发任务给 CLI
+      │
+      ▼  ① 模型第 1 次推理(query)
+    CLI 跑大模型 → 决定调 propose_options                            ← assistant message包含tool_use
+                   生成 tool_use: input={"options":["A","B","C"]}   ← options 就在第1次推理 生成
+      │
+      ▼  ② CLI 执行工具前，先通过hooks, 内嵌了 PreToolUse hook，所以执行工具前先执行PreToolUse hook
+    force_ask_propose_options(tool_name="mcp__...__propose_options")   [PreToolUse hook, matcher=None]
+      → 返回 {hookSpecificOutput: { "hookEventName": "PreToolUse"
+                                    permissionDecision: "ask",          ← 强制走 can_use_tool （因为是"ask"）
+                                    "permissionDecisionReason": "..."}}
+      │  ③ can_use_tool 被触发(是因为PreToolUse 返回 "ask")，在独立 child task 里 await
+      ▼
+    TerminalChoiceHandler(tool_name, tool_input={"options":["A","B","C"]}, ctx) 被调    ← Hook到can_use_tool
+      ← 此前模型已生成 options; 收到的是模型 ① 生成的 input(原封传过来)
+      → print "[choose] 1.A 2.B 3.C"
+      → input() 用户敲 "2"                                     ← ★ 交互在这 ★
+      → 返回 PermissionResultAllow(
+            updated_input={"options":["B"], "selected":"B"}    ← ★ selected 在这注入 ★
+        )
+      │  ④ SDK 把 updated_input 写回 CLI(control_response, _internal/query.py:414-428 转 dict, 475-483 transport.write)
+      ▼  ⑤ CLI 用 updated_input（非原始 input）执行工具，针对用户的选择作出summary
+    propose_options(args={"options":["B"], "selected":"B"})     ← 收到的是交互后改写的!
+      → selected = args.get("selected") → "B"                   (tools.py:40)
+      → return {"content":[{"type":"text","text":"User selected: B"}]}   (回 agent)
+      │  ⑥ 工具结果回模型 → 模型可能再推理(query) → ... → ResultMessage    ← 根据tool返回的结果，做第二次大模型推理
+      ▼
+    final text
+  __aexit__: disconnect
 ```
+
+**关键**：
+
+- **options 是模型 ① query 生成的**——`TerminalChoiceHandler` 在 ③ 被调时，模型已经跑过一次推理、生成了带三个 options 的 tool_use；回调收到的是模型生成的 input（原封传过来）。
+- **`can_use_tool` 的位置在"模型决策后、工具执行前"**（②→③→⑤）——所以它能拿到模型生成的 input 并改写。
+- **`selected` 不是 `propose_options` 工具自己交互拿的**——工具是"哑"的 echo（`tools.py:33-46`）；交互在 ③ `TerminalChoiceHandler` 里，选择通过 `updated_input` 注入，CLI 用改写后的 input 执行工具（⑤），工具才在 `args.get("selected")` 读到。这就是 `can_use_tool` 比"allow/deny"更强的地方——它能**改写**工具输入。
+- **模型可能多轮**：工具结果 ⑥ 回模型后，模型可能再推理（"用户选了 B，我来总结"）直到 `ResultMessage`；`TerminalChoiceHandler` 只在 propose_options 这次工具调用前触发一次。
 
 实测：`pick 1-3 > 2` → 选中方案回传 agent → agent 基于选中总结。
 
