@@ -150,6 +150,48 @@ SDK 机制（`types.py:220`）：PreToolUse hook 返回 `permissionDecision="ask
 
 `permissionDecision` 必须嵌在 `hookSpecificOutput` 字段里（SDK `types.py:558`），**不是顶层**。顶层格式 CLI 不认，`ask` 不生效。
 
+### PreToolUse vs can_use_tool：两段式权限链
+
+类似但不等同——都是工具调用前的回调，都能 allow/deny/改 input，但**定位、触发时机、能力**不同。PreToolUse 在上游，can_use_tool 在下游。
+
+| 维度 | PreToolUse hook | can_use_tool 回调 |
+|---|---|---|
+| 注册 | `hooks={"PreToolUse":[...]}` | `options.can_use_tool=...` |
+| **触发时机** | 工具调用前**总是触发**（注册了就跑） | **只在权限规则到 "ask" 时**触发 |
+| 定位 | 通用工具前 hook（能做副作用/加 context） | 权限专属回调 |
+| allow/deny | ✅ `permissionDecision` | ✅ `behavior` |
+| 改 input | ✅ `updatedInput` | ✅ `updated_input` |
+| 加上下文给模型 | ✅ `additionalContext` | ❌ |
+| 改权限规则 | ❌ | ✅ `updated_permissions` |
+| 上下文对象 | `HookInput`（tool_name, tool_input, tool_use_id） | `ToolPermissionContext`（更丰富：title/display_name/blocked_path/decision_reason） |
+
+流程关系（PreToolUse 先跑，其 "ask" 触发 can_use_tool，SDK `types.py:220`；allow/deny 会跳过 can_use_tool）：
+
+```
+工具调用前
+  │
+  ▼  ① PreToolUse hook (总是跑, 注册了就触发)
+  │   permissionDecision:
+  │     ├─ "allow"  → 工具直接执行(跳过 can_use_tool, 可带 updatedInput 改 input)
+  │     ├─ "deny"   → 拒绝(跳过 can_use_tool)
+  │     ├─ "ask"    → 触发 can_use_tool ↓              ← 我们的用法
+  │     └─ "defer"  → 走默认(可能进 can_use_tool)
+  │
+  ▼  ② can_use_tool (只在 ask 时触发)
+  │   ├─ Allow(可能 updated_input) → 工具执行(用改后 input)
+  │   └─ Deny(message) → 拒绝(消息回传 agent)
+```
+
+**为什么用俩（而不是只用一个）**：PreToolUse 其实能完全替代（`allow + updatedInput` 改 input，跳过 can_use_tool）。但选两段式：
+
+1. **PreToolUse 总是触发**——能强制 MCP/只读工具进回调（它们默认被 allow、不进 can_use_tool）；只用 can_use_tool 拦不到这些工具。
+2. **can_use_tool 有更丰富的权限上下文**（`title`/`display_name`/`blocked_path`）——做 UI 提示方便。
+3. **关注点分离**——PreToolUse 管"触发"（返回 ask），can_use_tool 管"干活"（交互 + 改写）。
+
+所以 `force_ask_*`（PreToolUse）返回 `ask`，把控制权转给 `Terminal*`（can_use_tool）。
+
+> 名字也对应分工：`PreToolUse` = "工具使用**前**"（讲时机，通用前 hook）；`can_use_tool` = "能不能用这个工具"（讲权限问题，权限决策点）。
+
 ## 7. 三个踩坑（关键经验）
 
 | # | 坑 | 现象 | 修复 |
