@@ -369,3 +369,81 @@ python -m src.interactive_runtime.example choose     # 方案选择: propose_opt
 | G. Managed Agents | 不自己 host CLI，用 Anthropic 托管 | 完全换 surface | 服务端、不想管 CLI 生命周期、要定时任务 |
 
 **演进优先级建议**：A（最直接扩展现有 handler）→ E（生产化可观测）→ B（并行/隔离）→ D（动态权限/模型）→ C（跨会话记忆）→ F/G（架构级选择）。
+
+## 13. SkillsSession：自主 skills-driven agent
+
+和 `InteractiveSession`（步内 HITL）并列的第二种 session——**自主跑（无 HITL）+ skills**。CLI 仍活着（`ClaudeSDKClient`），agent 自由用工具 + 加载 skill 跑流程（如 feature-dev 七阶段）。
+
+### 13.1 设计：自主 vs 步内 HITL（和 InteractiveSession 对比）
+
+| 维度 | InteractiveSession（步内 HITL） | SkillsSession（自主） |
+|---|---|---|
+| `permission_mode` | `default`（工具走 ask） | `bypassPermissions`（工具全放行） |
+| `can_use_tool` | ✅ handler（交互+改写） | ❌ 无 |
+| PreToolUse hook | ✅ `force_ask_*` | ❌ 无 |
+| `skills` | 不设 | ✅ `skills=`（`list`/`"all"`/`None`） |
+| 用途 | 工具调用时人审批/选方案 | agent 自主跑流程（skill 七阶段） |
+| CLI 活着 | ✅ | ✅ |
+
+### 13.2 机制（`session.py: SkillsSession`）
+
+`__aenter__` 构造 `ClaudeAgentOptions`：
+- `permission_mode="bypassPermissions"`（自主，无 HITL）
+- `skills=spec.skills`（SDK 自动加 Skill 工具 + `setting_sources`；`None`=CLI 默认，`[]`=禁用所有）
+- **无** `can_use_tool`、**无** `hooks`
+
+```python
+options = ClaudeAgentOptions(
+    ...,
+    permission_mode="bypassPermissions",   # 自主, 无 HITL
+    **({"skills": self.spec.skills} if self.spec.skills is not None else {}),
+    ...
+)
+client = ClaudeSDKClient(options=options)
+await client.__aenter__()   # connect(None), CLI 活着
+```
+
+`run` 用 `_run_and_collect`（和 `InteractiveSession` 共用，DRY）：`query` + `receive_response` → final text。
+
+### 13.3 流程
+
+```
+async with SkillsSession(spec, trace=True) as s:     # __aenter__: ClaudeSDKClient + bypass + skills, CLI 启动活着
+    final = await s.run(task)                         # query(task) + receive_response
+# __aexit__: disconnect, CLI 退出
+```
+
+内部时序（agent 自主用 skill 跑）：
+```
+client.query(task)                                    发任务
+  → CLI 跑模型 → 模型看 skill 列表(含 feature-dev-eval-agent-fw)
+  → 模型用 Skill 工具加载 SKILL.md
+  → 模型按 skill 七阶段跑(Discovery→...→Implementation→...→Summary)
+     每阶段: 模型推理 → 调工具(read/write/bash/Agent...) → 工具结果回模型 → 再推理
+     (bypassPermissions: 工具全放行, 无审批)
+  → ResultMessage → final text
+__aexit__: disconnect
+```
+
+### 13.4 用法（`example_skills.py`）
+
+```bash
+python -m src.interactive_runtime.example_skills "新增一个评估维度：代码复杂度"
+python -m src.interactive_runtime.example_skills --skill feature-dev-eval-agent-fw "你的功能描述"
+python -m src.interactive_runtime.example_skills --skill all "你的功能描述"
+```
+
+`_build_spec(skill)` 动态构造 system_prompt（匹配 skill 名，不硬编码）。`trace=True` 打印 tool_use 到 stderr。
+
+### 13.5 风险：会改代码
+
+`bypassPermissions` + skill 七阶段含 Implementation → agent 会**真的写/改项目文件**，且不审批。按 task 实现功能（加 model/evaluation/config/CLI 等）。agent 自主决定怎么改，可能跑偏。
+
+### 13.6 安全验证
+
+- **A. 只读任务**（task 限定"分析, 不改代码"）—— 验证 skill 加载+流程, 不触发 Implementation
+- **B. git 保护**（`git stash`/新分支）—— 跑完整流程, 改了可回退
+- **C. 换 `InteractiveSession + force_ask_all`** —— 步内审批, 但改 demo 形态
+- **D. `sandbox_settings` 限制写**
+
+推荐 A（先验证链路）或 B（git 保护跑完整）。
