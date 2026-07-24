@@ -30,12 +30,19 @@ from .handlers import (
     TerminalChoiceHandler,
     ToolApprovalHandler,
 )
-from .session import InteractiveAgentSpec, InteractiveSession
+from .session import (
+    InteractiveAgentSpec,
+    InteractiveSession,
+    SkillsAgentSpec,
+    SkillsSession,
+)
 from .tools import build_mcp_server, propose_options
 
 __all__ = [
     "InteractiveAgentSpec",
     "InteractiveSession",
+    "SkillsAgentSpec",
+    "SkillsSession",
     "TerminalApprovalHandler",
     "TerminalChoiceHandler",
     "ToolApprovalHandler",
