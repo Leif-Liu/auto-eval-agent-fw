@@ -314,3 +314,58 @@ python -m src.interactive_runtime.example choose     # 方案选择: propose_opt
 - **和 flow_engine 集成**：flow_engine 的某个 agent step 用 `InteractiveSession` 作为 runner（步间 + 步内 HITL 混用）
 - **结构化审批输入**：`PermissionResultAllow.updated_input` 配合 pydantic schema 强制决策结构
 - **运行中打断**：`ClaudeSDKClient.interrupt()`（`client.py:317`）支持运行中打断 agent
+
+## 12. 其他集成方案与 SDK 机制
+
+当前实现只用了 `ClaudeSDKClient` 的 `connect`/`query`/`receive_response`/`disconnect` + `can_use_tool` + PreToolUse hook + MCP 工具。下面是其他可选 surface + SDK 还没用到的机制，供扩展选型。
+
+### 12.1 其他 surface（不止 ClaudeSDKClient）
+
+| Surface | 经过 Claude Code? | 适合 |
+|---|---|---|
+| `query()`（Agent SDK） | ✅ | 一次性、无状态、步间编排/批量/CI（flow_engine 用） |
+| `ClaudeSDKClient`（Agent SDK） | ✅ | 双向、CLI 活着、步内 HITL（本 runtime 用） |
+| Claude API + Tool Runner（`anthropic` SDK） | ❌ | 轻量、自己搭 agent loop + 自己工具，不绑定 Claude Code 生态 |
+| Managed Agents（Anthropic 托管） | 部分（托管 loop + sandbox） | 不想自己 host CLI、要服务端持久化/定时任务 |
+
+选型轴：要不要 Claude Code 工具生态 / 要不要 mid-turn 控制 / 要不要托管 / 成本。多数独立 AI coding 产品走 Claude API（更可控）；要步内 HITL + 工具生态用 ClaudeSDKClient。
+
+### 12.2 `ClaudeSDKClient` 其他没用的机制（`client.py` 核实）
+
+| 方法 | 行号 | 能干啥 | 适用 |
+|---|---|---|---|
+| `interrupt()` | 317 | 中断当前 agent 执行 | 运行中打断重定向 |
+| `set_permission_mode()` | 323 | 运行中切权限（default/acceptEdits/plan/bypass/dontAsk/auto） | "先审后放"动态切换 |
+| `set_model()` | 350 | 运行中换模型 | 复杂步骤强模型/简单步骤便宜模型 |
+| `receive_messages()` | 275 | 持续流（不到 ResultMessage 也 yield） | 实时 UI 流式显示 agent 过程（现用 receive_response 只拿 final） |
+| `rewind_files()` | 374 | 文件回滚到某 user message 状态（需 `enable_file_checkpointing`） | 撤销 agent 的文件改动 |
+| `toggle_mcp_server()` / `reconnect_mcp_server()` | 428/406 | 动态启停/重连 MCP server | 运行中切换工具集 / MCP 自愈 |
+| `stop_task()` | 454 | 停一个跑着的 subagent task | 多 agent 编排时取消子任务 |
+| `get_mcp_status()` | 477 | 查 MCP 连接状态 | 监控/自愈 |
+| `get_context_usage()` | 510 | 查上下文窗口用量 | 接近上限时压缩/重启 |
+| `get_server_info()` | 546 | 查服务器能力/命令 | 动态发现可用 slash command |
+
+### 12.3 `ClaudeAgentOptions` 其他没用的能力
+
+| 能力 | 作用 | 适用 |
+|---|---|---|
+| subagents（`agents=` + Agent tool） | 主 agent 分派子 agent（独立 context + 工具集） | 并行/隔离任务（如同时 review 多文件） |
+| skills | 加载 task-specific 指令包 | 复杂领域知识 |
+| session_store / resume / continue | 跨进程/跨调用续 session | 长对话、跨会话记忆 |
+| 其他 hooks 事件 | PostToolUse（工具后）/ UserPromptSubmit（改写用户输入）/ Stop（收尾）/ PreCompact（压缩前）/ SubagentStart/Stop | 可观测、审计、输入预处理、压缩前抢救上下文 |
+| permissions（settings 规则） | 精细 allow/deny/ask 规则（按工具/路径） | 比 `force_ask_all` 更精细的权限控制 |
+| sandbox_settings | bash 命令沙箱限制 | 安全护栏 |
+
+### 12.4 推荐集成方案（结合本 runtime 演进）
+
+| 方案 | 做什么 | 用到的机制 | 适合 |
+|---|---|---|---|
+| A. Web/IM HITL | `ToolApprovalHandler` 实现成"推消息到队列 + 等回调" | 现有协议 + 自定义 handler | 审批/方案选择要异步跨人跨时区 |
+| B. subagents 编排 | 主 agent 用 Agent tool 分派子 agent | `agents=` + Agent tool | 并行/隔离任务 |
+| C. session 持久化 | 跨调用续接 agent 记忆 | `session_store` / `resume` | 长对话、跨会话工作 |
+| D. 动态权限/模型切换 | 运行中 `set_permission_mode` + `set_model` | ClaudeSDKClient 方法 | "先审后放" + 成本/能力平衡 |
+| E. PostToolUse + 可观测 | PostToolUse hook 记工具结果 → trace；`get_context_usage` 接近上限自动压缩 | 其他 hooks 事件 + context 查询 | 生产可观测 + 上下文管理 |
+| F. 混合 surface | 简单 step 用 `query()`（flow_engine），复杂/交互 step 用 `ClaudeSDKClient` | 两套 runtime 共存 | 不同 step 用不同能力 |
+| G. Managed Agents | 不自己 host CLI，用 Anthropic 托管 | 完全换 surface | 服务端、不想管 CLI 生命周期、要定时任务 |
+
+**演进优先级建议**：A（最直接扩展现有 handler）→ E（生产化可观测）→ B（并行/隔离）→ D（动态权限/模型）→ C（跨会话记忆）→ F/G（架构级选择）。
